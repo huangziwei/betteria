@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "betteria"
+version = "0.1.0"
+description = "A Python project named betteria"
+authors = []
+requires-python = ">=3.9.0"
+dependencies = [
+    "img2pdf>=0.6.0",
+    "opencv-python>=4.11.0.86",
+    "pdf2image>=1.17.0",
+    "pillow>=11.2.1",
+    "tqdm>=4.67.1",
+]
+readme = {file = "README.md", content-type = "text/markdown"}
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+    "twine", 
+    "maturin",
+]
+
+[tool.setuptools]
+packages = {find = {}}
+include-package-data = true
+
+[project.scripts]
+betteria = "betteria.cli:main"
