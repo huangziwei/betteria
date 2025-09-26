@@ -15,6 +15,7 @@ dist/
 .venv
 env/
 venv/
+dev/
 
 # Jupyter Notebook
 .ipynb_checkpoints

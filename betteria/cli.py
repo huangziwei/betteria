@@ -1,29 +1,40 @@
+from __future__ import annotations
+
 import argparse
-import os
-import shutil
-import sys
 import subprocess
+import sys
+import tempfile
+from importlib import metadata
+from pathlib import Path
+from typing import Sequence
+
 from tqdm import tqdm
 
 import cv2
 import img2pdf
 from PIL import Image
 
-def get_page_count(pdf_path):
-    """
-    Use 'pdfinfo' (part of Poppler) to read the total number of pages in the PDF.
-    Returns an integer page count or raises an error if 'pdfinfo' isn't installed.
-    """
+try:
+    __version__ = metadata.version("betteria")
+except metadata.PackageNotFoundError:  # pragma: no cover
+    __version__ = "0.0.0"
+
+def get_page_count(pdf_path: Path | str) -> int:
+    """Return the number of pages in *pdf_path* using Poppler's ``pdfinfo``."""
+    path = Path(pdf_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Input PDF not found: {path}")
+
     try:
         result = subprocess.run(
-            ["pdfinfo", pdf_path],
+            ["pdfinfo", str(path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
             universal_newlines=True
         )
     except FileNotFoundError:
-        raise RuntimeError("Poppler's 'pdfinfo' not found. Install Poppler or add it to PATH.")
+        raise RuntimeError("Poppler's 'pdfinfo' not found. Install Poppler or add it to PATH.") from None
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error running pdfinfo: {e.stderr}")
 
@@ -32,55 +43,71 @@ def get_page_count(pdf_path):
         if line.lower().startswith("pages:"):
             parts = line.split()
             return int(parts[1])
-    
+
     raise RuntimeError("Could not determine page count from pdfinfo output.")
 
-def pdf_to_images(pdf_path, dpi=150, out_dir="pages_temp"):
-    """
-    Converts each page of a PDF into temporary PNG images at the specified DPI
-    by manually calling 'pdftoppm' page by page, using '-singlefile' so 
-    we get consistent filenames (e.g., page_1.png).
-    """
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
+def pdf_to_images(
+    pdf_path: Path | str,
+    dpi: int = 150,
+    out_dir: Path | str | None = None,
+    show_progress: bool = True,
+) -> list[Path]:
+    """Render each page of *pdf_path* to PNG files using ``pdftoppm``."""
+    source = Path(pdf_path)
+    target_dir = Path(out_dir) if out_dir is not None else Path(tempfile.mkdtemp(prefix="betteria-pages-"))
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    total_pages = get_page_count(pdf_path)  # your existing function that calls 'pdfinfo'
-    image_paths = []
+    total_pages = get_page_count(source)
+    image_paths: list[Path] = []
 
-    for page_num in tqdm(range(1, total_pages + 1), desc="Converting PDF to PNG"):
-        out_stub = os.path.join(out_dir, f"page_{page_num}")
+    for page_num in tqdm(
+        range(1, total_pages + 1),
+        desc="Converting PDF to PNG",
+        disable=not show_progress,
+        leave=False,
+    ):
+        out_stub = target_dir / f"page_{page_num}"
 
         cmd = [
             "pdftoppm",
-            "-f", str(page_num),       # start page
-            "-l", str(page_num),       # end page
-            "-r", str(dpi),            # DPI
+            "-f",
+            str(page_num),
+            "-l",
+            str(page_num),
+            "-r",
+            str(dpi),
             "-png",
-            "-singlefile",             # produce exactly 1 file: 'out_stub.png'
-            pdf_path,
-            out_stub
+            "-singlefile",
+            str(source),
+            str(out_stub),
         ]
-        subprocess.run(cmd, check=True)
 
-        # Now we know the file is pages_temp/page_{page_num}.png
-        final_png = f"{out_stub}.png"
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except FileNotFoundError as exc:
+            raise RuntimeError("Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH.") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Error running pdftoppm on page {page_num}: {exc.stderr}") from exc
+
+        final_png = out_stub.with_suffix(".png")
         image_paths.append(final_png)
 
     return image_paths
 
+
 def whiten_and_save_as_tiff(
-    input_path,
-    out_path,
-    threshold=128,
-    use_adaptive=False,
-    block_size=31,
-    c_val=15,
-    invert=False
-):
-    """
-    Threshold the page to pure B/W, then save as a 1-bit CCITT Group 4 TIFF.
-    """
-    img = cv2.imread(input_path, cv2.IMREAD_GRAYSCALE)
+    input_path: Path | str,
+    out_path: Path | str,
+    threshold: int = 128,
+    use_adaptive: bool = False,
+    block_size: int = 31,
+    c_val: int = 15,
+    invert: bool = False,
+) -> None:
+    """Threshold *input_path* and write the result as a CCITT Group 4 TIFF."""
+    img = cv2.imread(str(input_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise RuntimeError(f"Failed to read image: {input_path}")
 
     if invert:
         img = 255 - img
@@ -96,61 +123,87 @@ def whiten_and_save_as_tiff(
     else:
         _, bw = cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY)
 
-    pil_bw = Image.fromarray(bw).convert("1")  # 1-bit pixels
-    pil_bw.save(out_path, format="TIFF", compression="group4")
+    pil_bw = Image.fromarray(bw).convert("1")
+    pil_bw.save(str(out_path), format="TIFF", compression="group4")
 
-def convert_tiffs_to_pdf(tiff_paths, output_pdf):
-    """
-    Combine a list of CCITT Group-4 TIFF images into a single PDF using img2pdf.
-    """
-    with open(output_pdf, "wb") as f:
-        f.write(img2pdf.convert(tiff_paths))
+
+def convert_tiffs_to_pdf(tiff_paths: Sequence[Path | str], output_pdf: Path | str) -> None:
+    """Combine the TIFF pages in *tiff_paths* into *output_pdf* as a PDF."""
+    paths: list[str] = [str(Path(path)) for path in tiff_paths]
+    if not paths:
+        raise ValueError("No TIFF pages supplied; cannot build PDF")
+
+    output = Path(output_pdf)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with output.open("wb") as file:
+        file.write(img2pdf.convert(paths))
 
 def betteria(
-    input_pdf,
-    output_pdf,
-    dpi=150,
-    threshold=128,
-    use_adaptive=False,
-    block_size=31,
-    c_val=15,
-    invert=False
-):
+    input_pdf: Path | str,
+    output_pdf: Path | str,
+    dpi: int = 150,
+    threshold: int = 128,
+    use_adaptive: bool = False,
+    block_size: int = 31,
+    c_val: int = 15,
+    invert: bool = False,
+    show_progress: bool = True,
+) -> None:
     """
     1) Convert each PDF page to PNG via Poppler's 'pdftoppm' (page-by-page).
     2) For each PNG, whiten background -> 1-bit TIFF (CCITT Group 4).
     3) Merge TIFFs into one compressed PDF.
     4) Clean up temp directories (PNG + TIFF).
     """
-    # Convert PDF to PNGs (page-by-page)
-    png_paths = pdf_to_images(input_pdf, dpi=dpi, out_dir="pages_temp")
+    if dpi <= 0:
+        raise ValueError("DPI must be a positive integer")
+    if not 0 <= threshold <= 255:
+        raise ValueError("Threshold must be between 0 and 255")
+    if use_adaptive and (block_size < 3 or block_size % 2 == 0):
+        raise ValueError("block_size must be an odd integer >= 3 when adaptive thresholding is enabled")
 
-    # Whiten images and store as 1-bit TIFF
-    tiff_dir = "tiff_temp"
-    os.makedirs(tiff_dir, exist_ok=True)
+    input_path = Path(input_pdf)
+    output_path = Path(output_pdf)
 
-    tiff_paths = []
-    for png_path in tqdm(png_paths, desc="Whitening images"):
-        base = os.path.splitext(os.path.basename(png_path))[0]
-        tiff_path = os.path.join(tiff_dir, f"{base}.tiff")
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input PDF not found: {input_path}")
+    if output_path.exists() and output_path.is_dir():
+        raise IsADirectoryError(f"Output path points to a directory: {output_path}")
 
-        whiten_and_save_as_tiff(
-            png_path,
-            tiff_path,
-            threshold=threshold,
-            use_adaptive=use_adaptive,
-            block_size=block_size,
-            c_val=c_val,
-            invert=invert
-        )
-        tiff_paths.append(tiff_path)
+    with tempfile.TemporaryDirectory(prefix="betteria-pages-") as pages_dir_name:
+        with tempfile.TemporaryDirectory(prefix="betteria-tiff-") as tiff_dir_name:
+            pages_dir = Path(pages_dir_name)
+            tiff_dir = Path(tiff_dir_name)
 
-    # Merge all TIFF pages into final PDF
-    convert_tiffs_to_pdf(tiff_paths, output_pdf)
+            png_paths = pdf_to_images(
+                input_path,
+                dpi=dpi,
+                out_dir=pages_dir,
+                show_progress=show_progress,
+            )
 
-    # Clean up
-    shutil.rmtree("pages_temp", ignore_errors=True)
-    shutil.rmtree("tiff_temp", ignore_errors=True)
+            tiff_paths: list[Path] = []
+            for png_path in tqdm(
+                png_paths,
+                desc="Whitening images",
+                disable=not show_progress,
+                leave=False,
+            ):
+                tiff_path = tiff_dir / (png_path.stem + ".tiff")
+
+                whiten_and_save_as_tiff(
+                    png_path,
+                    tiff_path,
+                    threshold=threshold,
+                    use_adaptive=use_adaptive,
+                    block_size=block_size,
+                    c_val=c_val,
+                    invert=invert,
+                )
+                tiff_paths.append(tiff_path)
+
+            convert_tiffs_to_pdf(tiff_paths, output_path)
 
 def main():
     # If user only typed one argument (besides the script name) and it doesn't start with '-',
@@ -165,11 +218,17 @@ def main():
     parser.add_argument("--input", required=True, help="Path to input PDF")
     parser.add_argument("--output", default="output.pdf", help="Path to output PDF (default: output.pdf)")
     parser.add_argument("--dpi", type=int, default=150, help="DPI for rasterizing PDF pages")
-    parser.add_argument("--threshold", type=int, default=128, help="Global threshold value")
-    parser.add_argument("--use_adaptive", type=lambda x: (str(x).lower()=="true"), default=False,
-                        help="Set True to use adaptive thresholding instead of global")
-    parser.add_argument("--invert", type=lambda x: (str(x).lower()=="true"), default=False,
-                        help="Set True if pages are inverted (light text on dark background)")
+    parser.add_argument("--threshold", type=int, default=128, help="Global threshold value (0-255)")
+    parser.add_argument("--block-size", type=int, default=31,
+                        help="Odd-sized neighborhood for adaptive thresholding (default: 31)")
+    parser.add_argument("--c-val", type=int, default=15,
+                        help="Constant subtracted in adaptive thresholding (default: 15)")
+    parser.add_argument("--adaptive", action="store_true",
+                        help="Use adaptive thresholding instead of a global threshold")
+    parser.add_argument("--invert", action="store_true",
+                        help="Invert pixels before thresholding (for light text on dark background)")
+    parser.add_argument("--quiet", action="store_true", help="Disable progress bars")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
 
@@ -178,8 +237,11 @@ def main():
         output_pdf=args.output,
         dpi=args.dpi,
         threshold=args.threshold,
-        use_adaptive=args.use_adaptive,
-        invert=args.invert
+        use_adaptive=args.adaptive,
+        block_size=args.block_size,
+        c_val=args.c_val,
+        invert=args.invert,
+        show_progress=not args.quiet,
     )
 
 if __name__ == "__main__":
