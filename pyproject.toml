@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "betteria"
 version = "0.1.1"
-description = "A Python project named betteria"
+description = "A commandline tool to enhance PDFs from Internet Archive."
 authors = []
 requires-python = ">=3.9.0"
 dependencies = [
