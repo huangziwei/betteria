@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -29,18 +30,41 @@ def test_pdf_to_images_generates_paths(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "get_page_count", lambda path: 2)
 
-    def fake_run(cmd, check, stdout, stderr):
-        assert cmd[0] == "pdftoppm"
-        output_stub = Path(cmd[-1])
-        output_stub.with_suffix(".png").write_bytes(b"PNG")
-        return CompletedProcess(cmd, 0, stdout="", stderr="")
+    class FakePopen:
+        def __init__(self, cmd, stdout, stderr):
+            assert cmd[:4] == ["pdftoppm", "-png", "-r", "72"]
+            self.cmd = cmd
+            self._step = 0
+            self.returncode: int | None = None
+            self.stderr = io.BytesIO(b"")
+            self.output_stub = Path(cmd[-1])
+            assert self.output_stub.parent == out_dir
+            assert self.output_stub.name == "page"
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        def wait(self, timeout=None):
+            if self._step == 0:
+                (
+                    self.output_stub.parent / f"{self.output_stub.name}-1.png"
+                ).write_bytes(b"PNG")
+                self._step += 1
+                raise cli.subprocess.TimeoutExpired(self.cmd, timeout)
+            if self._step == 1:
+                (
+                    self.output_stub.parent / f"{self.output_stub.name}-2.png"
+                ).write_bytes(b"PNG")
+                self.returncode = 0
+                self._step += 1
+                return self.returncode
+            return self.returncode
+
+    monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
 
     out_dir = tmp_path / "pages"
     results = cli.pdf_to_images(pdf_path, dpi=72, out_dir=out_dir, show_progress=False)
 
     assert len(results) == 2
+    assert results[0].name == "page-1.png"
+    assert results[1].name == "page-2.png"
     assert all(path.exists() and path.suffix == ".png" for path in results)
 
 
@@ -87,6 +111,7 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
         c_val=10,
         invert=True,
         show_progress=False,
+        jobs=1,
     )
 
     assert output_pdf.exists()
@@ -94,7 +119,9 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
     assert all(call[2]["threshold"] == 120 for call in whiten_calls)
     assert all(call[2]["invert"] is True for call in whiten_calls)
 
-    captured_input, captured_dpi, captured_out_dir, captured_progress = captured["pdf_to_images"]
+    captured_input, captured_dpi, captured_out_dir, captured_progress = captured[
+        "pdf_to_images"
+    ]
     assert captured_input == input_pdf
     assert captured_dpi == 100
     assert captured_progress is False
@@ -102,6 +129,49 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
 
     assert converted["output"] == output_pdf
     assert all(path.suffix == ".tiff" for path in converted["paths"])
+
+
+def test_betteria_default_output_path(monkeypatch, tmp_path):
+    input_pdf = tmp_path / "letter.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    png_dir = tmp_path / "pngs"
+    png_dir.mkdir()
+    png_paths = [png_dir / "page-1.png", png_dir / "page-2.png"]
+    for path in png_paths:
+        path.write_bytes(b"PNG")
+
+    monkeypatch.setattr(cli, "pdf_to_images", lambda *_, **__: png_paths)
+
+    def fake_whiten(png_path, tiff_path, **_):
+        Path(tiff_path).write_bytes(b"TIFF")
+
+    monkeypatch.setattr(cli, "whiten_and_save_as_tiff", fake_whiten)
+
+    captured: dict[str, object] = {}
+
+    def fake_convert(tiff_paths, output_pdf_path):
+        captured["paths"] = list(map(Path, tiff_paths))
+        captured["output"] = Path(output_pdf_path)
+
+    monkeypatch.setattr(cli, "convert_tiffs_to_pdf", fake_convert)
+
+    cli.betteria(
+        input_pdf=input_pdf,
+        output_pdf=None,
+        dpi=150,
+        threshold=128,
+        use_adaptive=False,
+        block_size=31,
+        c_val=15,
+        invert=False,
+        show_progress=False,
+        jobs=1,
+    )
+
+    expected_output = input_pdf.with_name(f"{input_pdf.stem}-enhanced.pdf")
+    assert captured["output"] == expected_output
+    assert all(path.suffix == ".tiff" for path in captured["paths"])
 
 
 def test_main_version_flag(monkeypatch, capsys):
@@ -114,3 +184,67 @@ def test_main_version_flag(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "betteria" in captured.out
     assert cli.__version__ in captured.out
+
+
+def test_main_accepts_auto_jobs(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_betteria(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "betteria", fake_betteria)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "--input",
+            "input.pdf",
+            "--output",
+            "output.pdf",
+            "--jobs",
+            "auto",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["jobs"] == 0
+
+
+def test_main_accepts_numeric_jobs(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_betteria(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "betteria", fake_betteria)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "--input",
+            "input.pdf",
+            "--jobs",
+            "3",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["jobs"] == 3
+
+
+def test_main_uses_default_output(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_betteria(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "betteria", fake_betteria)
+    monkeypatch.setattr(sys, "argv", ["betteria", "--input", "docs/invoice.pdf"])
+
+    cli.main()
+
+    assert captured["output_pdf"] is None
