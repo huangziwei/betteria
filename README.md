@@ -35,4 +35,6 @@ betteria --help
     --invert              Invert pixels before thresholding (for light text on dark background)
     --quiet               Disable progress bars
     --jobs JOBS           Parallel workers for whitening ('auto' or an integer; use 1 to disable)
+    --rasterizer RASTERIZER
+                          Poppler rasterizer to use ('pdftoppm' or 'pdftocairo')
     -v, --version         show program's version number and exit

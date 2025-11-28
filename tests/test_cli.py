@@ -106,6 +106,40 @@ def test_pdf_to_images_parallelizes(monkeypatch, tmp_path):
     assert [path.name for path in results] == ["page-1.png", "page-2.png", "page-3.png"]
 
 
+def test_pdf_to_images_uses_pdftocairo(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    monkeypatch.setattr(cli, "get_page_count", lambda path: 2)
+
+    out_dir = tmp_path / "pages"
+    seen: list[str] = []
+
+    def fake_run(cmd, stdout, stderr, check):
+        assert cmd[0] == "pdftocairo"
+        assert "-png" in cmd
+        f_idx = cmd.index("-f")
+        page = cmd[f_idx + 1]
+        seen.append(page)
+        output_prefix = Path(cmd[-1])
+        (output_prefix.parent / f"{output_prefix.name}-{page}.png").write_bytes(b"PNG")
+        return CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    results = cli.pdf_to_images(
+        pdf_path,
+        dpi=110,
+        out_dir=out_dir,
+        show_progress=False,
+        jobs=2,
+        rasterizer="pdftocairo",
+    )
+
+    assert sorted(seen) == ["1", "2"]
+    assert [path.name for path in results] == ["page-1.png", "page-2.png"]
+
+
 def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
     input_pdf = tmp_path / "doc.pdf"
     input_pdf.write_bytes(b"%PDF")
@@ -113,8 +147,15 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs):
-        captured["pdf_to_images"] = (input_path, dpi, out_dir, show_progress, jobs)
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        captured["pdf_to_images"] = (
+            input_path,
+            dpi,
+            out_dir,
+            show_progress,
+            jobs,
+            rasterizer,
+        )
         pages = [out_dir / "page_1.png", out_dir / "page_2.png"]
         for page in pages:
             page.write_bytes(b"PNG")
@@ -163,12 +204,14 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
         captured_out_dir,
         captured_progress,
         captured_jobs,
+        captured_rasterizer,
     ) = captured["pdf_to_images"]
     assert captured_input == input_pdf
     assert captured_dpi == 100
     assert captured_progress is False
     assert captured_out_dir.name.startswith("betteria-pages-")
     assert captured_jobs == 1
+    assert captured_rasterizer == "pdftoppm"
 
     assert converted["output"] == output_pdf
     assert all(path.suffix == ".tiff" for path in converted["paths"])
@@ -253,6 +296,7 @@ def test_main_accepts_auto_jobs(monkeypatch):
     cli.main()
 
     assert captured["jobs"] == 0
+    assert captured["rasterizer"] == "pdftoppm"
 
 
 def test_main_accepts_numeric_jobs(monkeypatch):
@@ -277,6 +321,7 @@ def test_main_accepts_numeric_jobs(monkeypatch):
     cli.main()
 
     assert captured["jobs"] == 3
+    assert captured["rasterizer"] == "pdftoppm"
 
 
 def test_main_uses_default_output(monkeypatch):
@@ -291,3 +336,28 @@ def test_main_uses_default_output(monkeypatch):
     cli.main()
 
     assert captured["output_pdf"] is None
+    assert captured["rasterizer"] == "pdftoppm"
+
+
+def test_main_accepts_rasterizer(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_betteria(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "betteria", fake_betteria)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "--input",
+            "input.pdf",
+            "--rasterizer",
+            "pdftocairo",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["rasterizer"] == "pdftocairo"

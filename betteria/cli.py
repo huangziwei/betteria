@@ -9,7 +9,7 @@ import sys
 import tempfile
 from importlib import metadata
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 import cv2
 import img2pdf
@@ -19,6 +19,7 @@ from rich.progress import (
     Progress,
     SpinnerColumn,
     TextColumn,
+    TimeElapsedColumn,
     TimeRemainingColumn,
 )
 from PIL import Image
@@ -27,6 +28,8 @@ try:
     __version__ = metadata.version("betteria")
 except metadata.PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0"
+
+Rasterizer = Literal["pdftoppm", "pdftocairo"]
 
 
 def get_page_count(pdf_path: Path | str) -> int:
@@ -89,6 +92,23 @@ def _coerce_jobs(value: str | int | None) -> int:
     return parsed
 
 
+def _build_rasterizer_cmd(
+    backend: Rasterizer,
+    dpi: int,
+    source: Path,
+    output_prefix: Path,
+    page: int | None = None,
+) -> list[str]:
+    if backend not in {"pdftoppm", "pdftocairo"}:
+        raise ValueError(f"Unsupported rasterizer backend: {backend}")
+
+    cmd = [backend, "-png", "-r", str(dpi)]
+    if page is not None:
+        cmd += ["-f", str(page), "-l", str(page)]
+    cmd += [str(source), str(output_prefix)]
+    return cmd
+
+
 @contextlib.contextmanager
 def _progress(total: int, description: str, enabled: bool):
     """
@@ -109,30 +129,20 @@ def _progress(total: int, description: str, enabled: bool):
         TextColumn("{task.description}"),
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
-        transient=True,
+        transient=False,
     )
     with progress:
         task_id = progress.add_task(description, total=total)
         yield progress, task_id
 
 
-def _run_pdftoppm_page(
-    source: Path, output_prefix: Path, dpi: int, page: int
+def _run_rasterizer_page(
+    backend: Rasterizer, source: Path, output_prefix: Path, dpi: int, page: int
 ) -> tuple[int, str]:
-    cmd = [
-        "pdftoppm",
-        "-png",
-        "-r",
-        str(dpi),
-        "-f",
-        str(page),
-        "-l",
-        str(page),
-        str(source),
-        str(output_prefix),
-    ]
+    cmd = _build_rasterizer_cmd(backend, dpi, source, output_prefix, page)
 
     try:
         result = subprocess.run(
@@ -143,7 +153,7 @@ def _run_pdftoppm_page(
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH."
+            f"Poppler's '{backend}' not found. Install Poppler or add it to PATH."
         ) from exc
 
     stderr_output = result.stderr.decode().strip() if result.stderr else ""
@@ -156,8 +166,9 @@ def pdf_to_images(
     out_dir: Path | str | None = None,
     show_progress: bool = True,
     jobs: int = 0,
+    rasterizer: Rasterizer = "pdftoppm",
 ) -> list[Path]:
-    """Render *pdf_path* to PNG files (optionally in parallel via ``pdftoppm``)."""
+    """Render *pdf_path* to PNG files (optionally in parallel via Poppler)."""
     source = Path(pdf_path)
     target_dir = (
         Path(out_dir)
@@ -173,7 +184,7 @@ def pdf_to_images(
     worker_target = max(1, min(worker_target, total_pages))
 
     if worker_target <= 1:
-        cmd = ["pdftoppm", "-png", "-r", str(dpi), str(source), str(output_prefix)]
+        cmd = _build_rasterizer_cmd(rasterizer, dpi, source, output_prefix)
 
         try:
             process = subprocess.Popen(
@@ -183,7 +194,7 @@ def pdf_to_images(
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                "Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH."
+                f"Poppler's '{rasterizer}' not found. Install Poppler or add it to PATH."
             ) from exc
 
         assert process.stderr is not None  # for type checkers
@@ -233,7 +244,7 @@ def pdf_to_images(
         process.stderr.close()
 
         if process.returncode != 0:
-            raise RuntimeError(f"Error running pdftoppm: {stderr_output}")
+            raise RuntimeError(f"Error running {rasterizer}: {stderr_output}")
 
         if len(png_paths) != total_pages:
             raise RuntimeError(
@@ -253,7 +264,12 @@ def pdf_to_images(
         ) as executor:
             futures = {
                 executor.submit(
-                    _run_pdftoppm_page, source, output_prefix, dpi, page
+                    _run_rasterizer_page,
+                    rasterizer,
+                    source,
+                    output_prefix,
+                    dpi,
+                    page,
                 ): page
                 for page in range(1, total_pages + 1)
             }
@@ -272,7 +288,7 @@ def pdf_to_images(
                         for pending in futures:
                             pending.cancel()
                         raise RuntimeError(
-                            f"Error running pdftoppm for page {page}: {stderr_output}"
+                            f"Error running {rasterizer} for page {page}: {stderr_output}"
                         )
 
                     progress_bar.advance(task_id, 1)
@@ -370,9 +386,10 @@ def betteria(
     invert: bool = False,
     show_progress: bool = True,
     jobs: int = 0,
+    rasterizer: Rasterizer = "pdftoppm",
 ) -> None:
     """
-    1) Convert each PDF page to PNG via Poppler's 'pdftoppm' (page-by-page).
+    1) Convert each PDF page to PNG via Poppler (page-by-page).
     2) For each PNG, whiten background -> 1-bit TIFF (CCITT Group 4).
     3) Merge TIFFs into one compressed PDF.
     4) Clean up temp directories (PNG + TIFF) even if interrupted.
@@ -408,6 +425,7 @@ def betteria(
                 out_dir=pages_dir,
                 show_progress=show_progress,
                 jobs=jobs,
+                rasterizer=rasterizer,
             )
 
             tiff_paths = [
@@ -515,6 +533,12 @@ def main():
         help="Parallel workers for whitening ('auto' or an integer; use 1 to disable)",
     )
     parser.add_argument(
+        "--rasterizer",
+        choices=["pdftoppm", "pdftocairo"],
+        default="pdftoppm",
+        help="Poppler rasterizer to use ('pdftoppm' or 'pdftocairo')",
+    )
+    parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
     )
 
@@ -531,6 +555,7 @@ def main():
         invert=args.invert,
         show_progress=not args.quiet,
         jobs=args.jobs,
+        rasterizer=args.rasterizer,
     )
 
 
