@@ -33,7 +33,7 @@ def test_pdf_to_images_generates_paths(monkeypatch, tmp_path):
 
     class FakePopen:
         def __init__(self, cmd, stdout, stderr):
-            assert cmd[:4] == ["pdftoppm", "-png", "-r", "72"]
+            assert cmd[:4] == ["pdftocairo", "-png", "-r", "72"]
             self.cmd = cmd
             self._step = 0
             self.returncode: int | None = None
@@ -82,7 +82,7 @@ def test_pdf_to_images_parallelizes(monkeypatch, tmp_path):
     lock = threading.Lock()
 
     def fake_run(cmd, stdout, stderr, check):
-        assert cmd[:4] == ["pdftoppm", "-png", "-r", "90"]
+        assert cmd[:4] == ["pdftocairo", "-png", "-r", "90"]
         f_idx = cmd.index("-f")
         l_idx = cmd.index("-l")
         assert cmd[f_idx + 1] == cmd[l_idx + 1]
@@ -106,7 +106,7 @@ def test_pdf_to_images_parallelizes(monkeypatch, tmp_path):
     assert [path.name for path in results] == ["page-1.png", "page-2.png", "page-3.png"]
 
 
-def test_pdf_to_images_uses_pdftocairo(monkeypatch, tmp_path):
+def test_pdf_to_images_uses_pdftoppm(monkeypatch, tmp_path):
     pdf_path = tmp_path / "doc.pdf"
     pdf_path.write_bytes(b"%PDF")
 
@@ -116,7 +116,7 @@ def test_pdf_to_images_uses_pdftocairo(monkeypatch, tmp_path):
     seen: list[str] = []
 
     def fake_run(cmd, stdout, stderr, check):
-        assert cmd[0] == "pdftocairo"
+        assert cmd[0] == "pdftoppm"
         assert "-png" in cmd
         f_idx = cmd.index("-f")
         page = cmd[f_idx + 1]
@@ -133,7 +133,7 @@ def test_pdf_to_images_uses_pdftocairo(monkeypatch, tmp_path):
         out_dir=out_dir,
         show_progress=False,
         jobs=2,
-        rasterizer="pdftocairo",
+        rasterizer="pdftoppm",
     )
 
     assert sorted(seen) == ["1", "2"]
@@ -211,7 +211,7 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
     assert captured_progress is False
     assert captured_out_dir.name.startswith("betteria-pages-")
     assert captured_jobs == 1
-    assert captured_rasterizer == "pdftoppm"
+    assert captured_rasterizer == "pdftocairo"
 
     assert converted["output"] == output_pdf
     assert all(path.suffix == ".tiff" for path in converted["paths"])
@@ -296,7 +296,7 @@ def test_main_accepts_auto_jobs(monkeypatch):
     cli.main()
 
     assert captured["jobs"] == 0
-    assert captured["rasterizer"] == "pdftoppm"
+    assert captured["rasterizer"] == "pdftocairo"
 
 
 def test_main_accepts_numeric_jobs(monkeypatch):
@@ -321,7 +321,7 @@ def test_main_accepts_numeric_jobs(monkeypatch):
     cli.main()
 
     assert captured["jobs"] == 3
-    assert captured["rasterizer"] == "pdftoppm"
+    assert captured["rasterizer"] == "pdftocairo"
 
 
 def test_main_uses_default_output(monkeypatch):
@@ -336,7 +336,7 @@ def test_main_uses_default_output(monkeypatch):
     cli.main()
 
     assert captured["output_pdf"] is None
-    assert captured["rasterizer"] == "pdftoppm"
+    assert captured["rasterizer"] == "pdftocairo"
 
 
 def test_main_accepts_rasterizer(monkeypatch):

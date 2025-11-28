@@ -166,7 +166,7 @@ def pdf_to_images(
     out_dir: Path | str | None = None,
     show_progress: bool = True,
     jobs: int = 0,
-    rasterizer: Rasterizer = "pdftoppm",
+    rasterizer: Rasterizer = "pdftocairo",
 ) -> list[Path]:
     """Render *pdf_path* to PNG files (optionally in parallel via Poppler)."""
     source = Path(pdf_path)
@@ -386,7 +386,7 @@ def betteria(
     invert: bool = False,
     show_progress: bool = True,
     jobs: int = 0,
-    rasterizer: Rasterizer = "pdftoppm",
+    rasterizer: Rasterizer = "pdftocairo",
 ) -> None:
     """
     1) Convert each PDF page to PNG via Poppler (page-by-page).
@@ -535,7 +535,7 @@ def main():
     parser.add_argument(
         "--rasterizer",
         choices=["pdftoppm", "pdftocairo"],
-        default="pdftoppm",
+        default="pdftocairo",
         help="Poppler rasterizer to use ('pdftoppm' or 'pdftocairo')",
     )
     parser.add_argument(

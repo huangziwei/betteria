@@ -36,5 +36,5 @@ betteria --help
     --quiet               Disable progress bars
     --jobs JOBS           Parallel workers for whitening ('auto' or an integer; use 1 to disable)
     --rasterizer RASTERIZER
-                          Poppler rasterizer to use ('pdftoppm' or 'pdftocairo')
+                          Poppler rasterizer to use ('pdftoppm' or 'pdftocairo') (default: pdftocairo)
     -v, --version         show program's version number and exit
