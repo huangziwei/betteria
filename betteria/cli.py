@@ -92,6 +92,46 @@ def _coerce_jobs(value: str | int | None) -> int:
     return parsed
 
 
+def _available_cpu_count() -> int:
+    """Best-effort CPU count (logical when available, affinity-aware on Linux)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except Exception:
+        pass
+
+    if sys.platform.startswith(("darwin", "freebsd")):
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.logicalcpu_max"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                text=True,
+            )
+            count = int(result.stdout.strip())
+            if count > 0:
+                return count
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.physicalcpu_max"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                text=True,
+            )
+            count = int(result.stdout.strip())
+            if count > 0:
+                return count
+        except Exception:
+            pass
+
+    count = os.cpu_count() or 1
+    return max(1, count)
+
+
 def _build_rasterizer_cmd(
     backend: Rasterizer,
     dpi: int,
@@ -180,7 +220,7 @@ def pdf_to_images(
     total_pages = get_page_count(source)
     output_prefix = target_dir / "page"
 
-    worker_target = jobs if jobs > 0 else os.cpu_count() or 1
+    worker_target = jobs if jobs > 0 else _available_cpu_count()
     worker_target = max(1, min(worker_target, total_pages))
 
     if worker_target <= 1:
@@ -416,7 +456,7 @@ def betteria(
             if not png_paths:
                 raise RuntimeError("No PNG pages generated from input PDF")
 
-            worker_target = jobs if jobs > 0 else os.cpu_count() or 1
+            worker_target = jobs if jobs > 0 else _available_cpu_count()
             worker_target = min(worker_target, len(png_paths))
 
             if worker_target <= 1:
