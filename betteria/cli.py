@@ -519,10 +519,13 @@ def main():
         help="Path to output PDF (default: <input-stem>-enhanced.pdf)",
     )
     parser.add_argument(
-        "--dpi", type=int, default=150, help="DPI for rasterizing PDF pages"
+        "--dpi", type=int, default=150, help="DPI for rasterizing PDF pages (default: 150)"
     )
     parser.add_argument(
-        "--threshold", type=int, default=128, help="Global threshold value (0-255)"
+        "--threshold",
+        type=int,
+        default=128,
+        help="Global threshold value (0-255, default: 128; ignored when adaptive is on)",
     )
     parser.add_argument(
         "--block-size",
@@ -539,19 +542,24 @@ def main():
     parser.add_argument(
         "--adaptive",
         action="store_true",
-        help="Use adaptive thresholding instead of a global threshold",
+        default=True,
+        help="Use adaptive thresholding instead of a global threshold (default: on)",
     )
     parser.add_argument(
         "--invert",
         action="store_true",
-        help="Invert pixels before thresholding (for light text on dark background)",
+        help="Invert pixels before thresholding (for light text on dark background, default: off)",
     )
-    parser.add_argument("--quiet", action="store_true", help="Disable progress bars")
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable progress bars (default: show progress)",
+    )
     parser.add_argument(
         "--jobs",
         type=_coerce_jobs,
         default=0,
-        help="Parallel workers for whitening ('auto' or an integer; use 1 to disable)",
+        help="Parallel workers for rasterizing and whitening ('auto'/0 uses logical cores; use 1 to disable)",
     )
     parser.add_argument(
         "--rasterizer",

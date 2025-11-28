@@ -25,16 +25,16 @@ betteria --help
     -h, --help            show this help message and exit
     --input INPUT         Path to input PDF
     --output OUTPUT       Path to output PDF (default: <input-stem>-enhanced.pdf)
-    --dpi DPI             DPI for rasterizing PDF pages
+    --dpi DPI             DPI for rasterizing PDF pages (default: 150)
     --threshold THRESHOLD
                             Global threshold value (0-255)
     --block-size BLOCK_SIZE
                             Odd-sized neighborhood for adaptive thresholding (default: 31)
     --c-val C_VAL         Constant subtracted in adaptive thresholding (default: 15)
-    --adaptive            Use adaptive thresholding instead of a global threshold
-    --invert              Invert pixels before thresholding (for light text on dark background)
-    --quiet               Disable progress bars
-    --jobs JOBS           Parallel workers for whitening ('auto' or an integer; use 1 to disable)
+    --adaptive            Use adaptive thresholding instead of a global threshold (default: on)
+    --invert              Invert pixels before thresholding (for light text on dark background, default: off)
+    --quiet               Disable progress bars (default: show progress)
+    --jobs JOBS           Parallel workers for rasterizing and whitening ('auto'/0 uses logical cores; use 1 to disable)
     --rasterizer RASTERIZER
                           Poppler rasterizer to use ('pdftoppm' or 'pdftocairo') (default: pdftocairo)
     -v, --version         show program's version number and exit

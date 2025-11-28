@@ -247,7 +247,7 @@ def test_betteria_default_output_path(monkeypatch, tmp_path):
         output_pdf=None,
         dpi=150,
         threshold=128,
-        use_adaptive=False,
+        use_adaptive=True,
         block_size=31,
         c_val=15,
         invert=False,
