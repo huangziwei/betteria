@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sys
+import threading
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -60,12 +61,49 @@ def test_pdf_to_images_generates_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
 
     out_dir = tmp_path / "pages"
-    results = cli.pdf_to_images(pdf_path, dpi=72, out_dir=out_dir, show_progress=False)
+    results = cli.pdf_to_images(
+        pdf_path, dpi=72, out_dir=out_dir, show_progress=False, jobs=1
+    )
 
     assert len(results) == 2
     assert results[0].name == "page-1.png"
     assert results[1].name == "page-2.png"
     assert all(path.exists() and path.suffix == ".png" for path in results)
+
+
+def test_pdf_to_images_parallelizes(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    monkeypatch.setattr(cli, "get_page_count", lambda path: 3)
+
+    out_dir = tmp_path / "pages"
+    calls: list[int] = []
+    lock = threading.Lock()
+
+    def fake_run(cmd, stdout, stderr, check):
+        assert cmd[:4] == ["pdftoppm", "-png", "-r", "90"]
+        f_idx = cmd.index("-f")
+        l_idx = cmd.index("-l")
+        assert cmd[f_idx + 1] == cmd[l_idx + 1]
+        page = int(cmd[f_idx + 1])
+        output_prefix = Path(cmd[-1])
+        assert output_prefix.parent == out_dir
+        png_file = output_prefix.parent / f"{output_prefix.name}-{page}.png"
+        png_file.write_bytes(b"PNG")
+        with lock:
+            calls.append(page)
+        return CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    results = cli.pdf_to_images(
+        pdf_path, dpi=90, out_dir=out_dir, show_progress=False, jobs=2
+    )
+
+    assert sorted(calls) == [1, 2, 3]
+    assert len(results) == 3
+    assert [path.name for path in results] == ["page-1.png", "page-2.png", "page-3.png"]
 
 
 def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
@@ -75,8 +113,8 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress):
-        captured["pdf_to_images"] = (input_path, dpi, out_dir, show_progress)
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs):
+        captured["pdf_to_images"] = (input_path, dpi, out_dir, show_progress, jobs)
         pages = [out_dir / "page_1.png", out_dir / "page_2.png"]
         for page in pages:
             page.write_bytes(b"PNG")
@@ -119,13 +157,18 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
     assert all(call[2]["threshold"] == 120 for call in whiten_calls)
     assert all(call[2]["invert"] is True for call in whiten_calls)
 
-    captured_input, captured_dpi, captured_out_dir, captured_progress = captured[
-        "pdf_to_images"
-    ]
+    (
+        captured_input,
+        captured_dpi,
+        captured_out_dir,
+        captured_progress,
+        captured_jobs,
+    ) = captured["pdf_to_images"]
     assert captured_input == input_pdf
     assert captured_dpi == 100
     assert captured_progress is False
     assert captured_out_dir.name.startswith("betteria-pages-")
+    assert captured_jobs == 1
 
     assert converted["output"] == output_pdf
     assert all(path.suffix == ".tiff" for path in converted["paths"])

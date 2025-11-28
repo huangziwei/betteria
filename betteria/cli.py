@@ -81,13 +81,46 @@ def _coerce_jobs(value: str | int | None) -> int:
     return parsed
 
 
+def _run_pdftoppm_page(
+    source: Path, output_prefix: Path, dpi: int, page: int
+) -> tuple[int, str]:
+    cmd = [
+        "pdftoppm",
+        "-png",
+        "-r",
+        str(dpi),
+        "-f",
+        str(page),
+        "-l",
+        str(page),
+        str(source),
+        str(output_prefix),
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH."
+        ) from exc
+
+    stderr_output = result.stderr.decode().strip() if result.stderr else ""
+    return result.returncode, stderr_output
+
+
 def pdf_to_images(
     pdf_path: Path | str,
     dpi: int = 150,
     out_dir: Path | str | None = None,
     show_progress: bool = True,
+    jobs: int = 0,
 ) -> list[Path]:
-    """Render *pdf_path* to PNG files using a single ``pdftoppm`` call."""
+    """Render *pdf_path* to PNG files (optionally in parallel via ``pdftoppm``)."""
     source = Path(pdf_path)
     target_dir = (
         Path(out_dir)
@@ -99,76 +132,128 @@ def pdf_to_images(
     total_pages = get_page_count(source)
     output_prefix = target_dir / "page"
 
-    cmd = ["pdftoppm", "-png", "-r", str(dpi), str(source), str(output_prefix)]
+    worker_target = jobs if jobs > 0 else os.cpu_count() or 1
+    worker_target = max(1, min(worker_target, total_pages))
 
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH."
-        ) from exc
+    if worker_target <= 1:
+        cmd = ["pdftoppm", "-png", "-r", str(dpi), str(source), str(output_prefix)]
 
-    assert process.stderr is not None  # for type checkers
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Poppler's 'pdftoppm' not found. Install Poppler or add it to PATH."
+            ) from exc
 
-    png_paths: list[Path] = []
-    seen_files: set[str] = set()
-    process_finished = False
+        assert process.stderr is not None  # for type checkers
+
+        png_paths: list[Path] = []
+        seen_files: set[str] = set()
+        process_finished = False
+
+        with tqdm(
+            total=total_pages,
+            desc="Converting PDF to PNG",
+            disable=not show_progress,
+            leave=False,
+        ) as progress:
+            while len(png_paths) < total_pages:
+                new_found = 0
+
+                for entry in target_dir.iterdir():
+                    if entry.suffix.lower() != ".png":
+                        continue
+                    name = entry.name
+                    if name in seen_files:
+                        continue
+                    seen_files.add(name)
+                    png_paths.append(entry)
+                    progress.update(1)
+                    new_found += 1
+
+                if len(png_paths) >= total_pages:
+                    break
+
+                if process_finished:
+                    if new_found == 0:
+                        break
+                    continue
+
+                try:
+                    process.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    continue
+
+                process_finished = True
+
+        if process.returncode is None:
+            process.wait()
+            process_finished = True
+
+        stderr_output = process.stderr.read().decode().strip()
+        process.stderr.close()
+
+        if process.returncode != 0:
+            raise RuntimeError(f"Error running pdftoppm: {stderr_output}")
+
+        if len(png_paths) != total_pages:
+            raise RuntimeError(
+                f"Expected {total_pages} PNG files but found {len(png_paths)} in {target_dir}."
+            )
+
+        png_paths.sort(key=_page_sort_key)
+
+        return png_paths
 
     with tqdm(
         total=total_pages,
         desc="Converting PDF to PNG",
         disable=not show_progress,
         leave=False,
-    ) as progress:
-        while len(png_paths) < total_pages:
-            new_found = 0
-
-            for entry in target_dir.iterdir():
-                if entry.suffix.lower() != ".png":
-                    continue
-                name = entry.name
-                if name in seen_files:
-                    continue
-                seen_files.add(name)
-                png_paths.append(entry)
-                progress.update(1)
-                new_found += 1
-
-            if len(png_paths) >= total_pages:
-                break
-
-            if process_finished:
-                if new_found == 0:
-                    break
-                continue
+    ) as progress_bar:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=worker_target
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _run_pdftoppm_page, source, output_prefix, dpi, page
+                ): page
+                for page in range(1, total_pages + 1)
+            }
 
             try:
-                process.wait(timeout=0.1)
-            except subprocess.TimeoutExpired:
-                continue
+                for future in concurrent.futures.as_completed(futures):
+                    page = futures[future]
+                    try:
+                        returncode, stderr_output = future.result()
+                    except Exception:
+                        for pending in futures:
+                            pending.cancel()
+                        raise
 
-            process_finished = True
+                    if returncode != 0:
+                        for pending in futures:
+                            pending.cancel()
+                        raise RuntimeError(
+                            f"Error running pdftoppm for page {page}: {stderr_output}"
+                        )
 
-    if process.returncode is None:
-        process.wait()
-        process_finished = True
+                    progress_bar.update(1)
+            except KeyboardInterrupt:
+                for pending in futures:
+                    pending.cancel()
+                raise
 
-    stderr_output = process.stderr.read().decode().strip()
-    process.stderr.close()
-
-    if process.returncode != 0:
-        raise RuntimeError(f"Error running pdftoppm: {stderr_output}")
+    png_paths = sorted(target_dir.glob("*.png"), key=_page_sort_key)
 
     if len(png_paths) != total_pages:
         raise RuntimeError(
             f"Expected {total_pages} PNG files but found {len(png_paths)} in {target_dir}."
         )
-
-    png_paths.sort(key=_page_sort_key)
 
     return png_paths
 
@@ -289,6 +374,7 @@ def betteria(
                 dpi=dpi,
                 out_dir=pages_dir,
                 show_progress=show_progress,
+                jobs=jobs,
             )
 
             tiff_paths = [
