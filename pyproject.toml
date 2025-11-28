@@ -13,7 +13,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pdf2image>=1.17.0",
     "pillow>=11.2.1",
-    "tqdm>=4.67.1",
+    "rich>=13.9.4",
 ]
 readme = {file = "README.md", content-type = "text/markdown"}
 

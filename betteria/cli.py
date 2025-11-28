@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import os
 import subprocess
 import sys
@@ -12,8 +13,15 @@ from typing import Sequence
 
 import cv2
 import img2pdf
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from PIL import Image
-from tqdm import tqdm
 
 try:
     __version__ = metadata.version("betteria")
@@ -79,6 +87,35 @@ def _coerce_jobs(value: str | int | None) -> int:
         raise argparse.ArgumentTypeError("jobs must be non-negative")
 
     return parsed
+
+
+@contextlib.contextmanager
+def _progress(total: int, description: str, enabled: bool):
+    """
+    Wrap Rich progress so callers can advance regardless of whether it is shown.
+    """
+    if not enabled:
+        # Null object for disabled progress
+        class _NullProgress:
+            def advance(self, *_args, **_kwargs):
+                return None
+
+        yield _NullProgress(), 0
+        return
+
+    console = Console(stderr=True)
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True,
+    )
+    with progress:
+        task_id = progress.add_task(description, total=total)
+        yield progress, task_id
 
 
 def _run_pdftoppm_page(
@@ -155,12 +192,10 @@ def pdf_to_images(
         seen_files: set[str] = set()
         process_finished = False
 
-        with tqdm(
-            total=total_pages,
-            desc="Converting PDF to PNG",
-            disable=not show_progress,
-            leave=False,
-        ) as progress:
+        with _progress(total_pages, "Converting PDF to PNG", show_progress) as (
+            progress,
+            task_id,
+        ):
             while len(png_paths) < total_pages:
                 new_found = 0
 
@@ -172,7 +207,7 @@ def pdf_to_images(
                         continue
                     seen_files.add(name)
                     png_paths.append(entry)
-                    progress.update(1)
+                    progress.advance(task_id, 1)
                     new_found += 1
 
                 if len(png_paths) >= total_pages:
@@ -209,12 +244,10 @@ def pdf_to_images(
 
         return png_paths
 
-    with tqdm(
-        total=total_pages,
-        desc="Converting PDF to PNG",
-        disable=not show_progress,
-        leave=False,
-    ) as progress_bar:
+    with _progress(total_pages, "Converting PDF to PNG", show_progress) as (
+        progress_bar,
+        task_id,
+    ):
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=worker_target
         ) as executor:
@@ -242,7 +275,7 @@ def pdf_to_images(
                             f"Error running pdftoppm for page {page}: {stderr_output}"
                         )
 
-                    progress_bar.update(1)
+                    progress_bar.advance(task_id, 1)
             except KeyboardInterrupt:
                 for pending in futures:
                     pending.cancel()
@@ -388,29 +421,24 @@ def betteria(
             worker_target = min(worker_target, len(png_paths))
 
             if worker_target <= 1:
-                iterator = tqdm(
-                    png_paths,
-                    desc="Whitening images",
-                    disable=not show_progress,
-                    leave=False,
-                )
-                for png_path, tiff_path in zip(iterator, tiff_paths):
-                    whiten_and_save_as_tiff(
-                        png_path,
-                        tiff_path,
-                        threshold=threshold,
-                        use_adaptive=use_adaptive,
-                        block_size=block_size,
-                        c_val=c_val,
-                        invert=invert,
-                    )
+                with _progress(
+                    len(png_paths), "Whitening images", show_progress
+                ) as (progress, task_id):
+                    for png_path, tiff_path in zip(png_paths, tiff_paths):
+                        whiten_and_save_as_tiff(
+                            png_path,
+                            tiff_path,
+                            threshold=threshold,
+                            use_adaptive=use_adaptive,
+                            block_size=block_size,
+                            c_val=c_val,
+                            invert=invert,
+                        )
+                        progress.advance(task_id, 1)
             else:
-                with tqdm(
-                    total=len(png_paths),
-                    desc="Whitening images",
-                    disable=not show_progress,
-                    leave=False,
-                ) as progress_bar:
+                with _progress(
+                    len(png_paths), "Whitening images", show_progress
+                ) as (progress_bar, task_id):
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=worker_target
                     ) as executor:
@@ -430,7 +458,7 @@ def betteria(
 
                         for future in concurrent.futures.as_completed(futures):
                             future.result()
-                            progress_bar.update(1)
+                            progress_bar.advance(task_id, 1)
 
             convert_tiffs_to_pdf(tiff_paths, output_path)
 
