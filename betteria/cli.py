@@ -199,46 +199,23 @@ def pdf_to_images(
 
         assert process.stderr is not None  # for type checkers
 
-        png_paths: list[Path] = []
-        seen_files: set[str] = set()
-        process_finished = False
-
         with _progress(total_pages, "Converting PDF to PNG", show_progress) as (
             progress,
             task_id,
         ):
-            while len(png_paths) < total_pages:
-                new_found = 0
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                process.terminate()
+                process.wait()
+                stderr_output = process.stderr.read().decode().strip()
+                process.stderr.close()
+                raise RuntimeError(
+                    f"Rasterization interrupted: {stderr_output}"
+                ) from None
 
-                for entry in target_dir.iterdir():
-                    if entry.suffix.lower() != ".png":
-                        continue
-                    name = entry.name
-                    if name in seen_files:
-                        continue
-                    seen_files.add(name)
-                    png_paths.append(entry)
-                    progress.advance(task_id, 1)
-                    new_found += 1
-
-                if len(png_paths) >= total_pages:
-                    break
-
-                if process_finished:
-                    if new_found == 0:
-                        break
-                    continue
-
-                try:
-                    process.wait(timeout=0.1)
-                except subprocess.TimeoutExpired:
-                    continue
-
-                process_finished = True
-
-        if process.returncode is None:
-            process.wait()
-            process_finished = True
+            for _ in range(total_pages):
+                progress.advance(task_id, 1)
 
         stderr_output = process.stderr.read().decode().strip()
         process.stderr.close()
@@ -246,12 +223,14 @@ def pdf_to_images(
         if process.returncode != 0:
             raise RuntimeError(f"Error running {rasterizer}: {stderr_output}")
 
+        png_paths = sorted(
+            target_dir.glob(f"{output_prefix.name}-*.png"), key=_page_sort_key
+        )
+
         if len(png_paths) != total_pages:
             raise RuntimeError(
                 f"Expected {total_pages} PNG files but found {len(png_paths)} in {target_dir}."
             )
-
-        png_paths.sort(key=_page_sort_key)
 
         return png_paths
 
@@ -297,7 +276,9 @@ def pdf_to_images(
                     pending.cancel()
                 raise
 
-    png_paths = sorted(target_dir.glob("*.png"), key=_page_sort_key)
+    png_paths = sorted(
+        target_dir.glob(f"{output_prefix.name}-*.png"), key=_page_sort_key
+    )
 
     if len(png_paths) != total_pages:
         raise RuntimeError(
