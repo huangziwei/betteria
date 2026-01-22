@@ -2,7 +2,7 @@
 
 [![PyPI version](https://badge.fury.io/py/betteria.svg)](https://badge.fury.io/py/betteria)
 
-A commandline tool to enhance PDFs from Internet Archive.
+A commandline tool to enhance scanned PDFs readibility (originally for the ones from Internet Archive, but actually can be used for any).
 
 ## Installation
 
