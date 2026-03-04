@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import threading
 from pathlib import Path
@@ -35,7 +36,6 @@ def test_pdf_to_images_generates_paths(monkeypatch, tmp_path):
         def __init__(self, cmd, stdout, stderr):
             assert cmd[:4] == ["pdftocairo", "-png", "-r", "72"]
             self.cmd = cmd
-            self._step = 0
             self.returncode: int | None = None
             self.stderr = io.BytesIO(b"")
             self.output_stub = Path(cmd[-1])
@@ -43,19 +43,13 @@ def test_pdf_to_images_generates_paths(monkeypatch, tmp_path):
             assert self.output_stub.name == "page"
 
         def wait(self, timeout=None):
-            if self._step == 0:
-                (
-                    self.output_stub.parent / f"{self.output_stub.name}-1.png"
-                ).write_bytes(b"PNG")
-                self._step += 1
-                raise cli.subprocess.TimeoutExpired(self.cmd, timeout)
-            if self._step == 1:
-                (
-                    self.output_stub.parent / f"{self.output_stub.name}-2.png"
-                ).write_bytes(b"PNG")
-                self.returncode = 0
-                self._step += 1
-                return self.returncode
+            (self.output_stub.parent / f"{self.output_stub.name}-1.png").write_bytes(
+                b"PNG"
+            )
+            (self.output_stub.parent / f"{self.output_stub.name}-2.png").write_bytes(
+                b"PNG"
+            )
+            self.returncode = 0
             return self.returncode
 
     monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
@@ -140,10 +134,9 @@ def test_pdf_to_images_uses_pdftoppm(monkeypatch, tmp_path):
     assert [path.name for path in results] == ["page-1.png", "page-2.png"]
 
 
-def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
+def test_cmd_enhance_coordinates_pipeline(monkeypatch, tmp_path):
     input_pdf = tmp_path / "doc.pdf"
     input_pdf.write_bytes(b"%PDF")
-    output_pdf = tmp_path / "output" / "result.pdf"
 
     captured = {}
 
@@ -163,26 +156,16 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
 
     whiten_calls: list[tuple[Path, Path, dict]] = []
 
-    def fake_whiten(png_path, tiff_path, **kwargs):
-        tiff_path = Path(tiff_path)
-        tiff_path.write_bytes(b"TIFF")
-        whiten_calls.append((Path(png_path), tiff_path, kwargs))
-
-    converted = {}
-
-    def fake_convert(tiff_paths, output_pdf_path):
-        converted["paths"] = list(map(Path, tiff_paths))
-        converted["output"] = Path(output_pdf_path)
-        Path(output_pdf_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_pdf_path).write_bytes(b"PDF")
+    def fake_whiten(png_path, out_path, **kwargs):
+        out_path = Path(out_path)
+        out_path.write_bytes(b"PNG-enhanced")
+        whiten_calls.append((Path(png_path), out_path, kwargs))
 
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
-    monkeypatch.setattr(cli, "whiten_and_save_as_tiff", fake_whiten)
-    monkeypatch.setattr(cli, "convert_tiffs_to_pdf", fake_convert)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
-    cli.betteria(
+    book_dir = cli.cmd_enhance(
         input_pdf=input_pdf,
-        output_pdf=output_pdf,
         dpi=100,
         threshold=120,
         use_adaptive=False,
@@ -193,10 +176,17 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
         jobs=1,
     )
 
-    assert output_pdf.exists()
+    assert book_dir == tmp_path / "doc"
+    assert book_dir.is_dir()
+    assert (book_dir / "doc.original.pdf").exists()
+    artifacts_dir = book_dir / "artifacts"
+    assert artifacts_dir.is_dir()
     assert len(whiten_calls) == 2
     assert all(call[2]["threshold"] == 120 for call in whiten_calls)
     assert all(call[2]["invert"] is True for call in whiten_calls)
+    # Enhanced PNGs should be in the artifacts dir
+    assert all(call[1].parent == artifacts_dir for call in whiten_calls)
+    assert all(call[1].suffix == ".png" for call in whiten_calls)
 
     (
         captured_input,
@@ -213,51 +203,270 @@ def test_betteria_coordinates_pipeline(monkeypatch, tmp_path):
     assert captured_jobs == 1
     assert captured_rasterizer == "pdftocairo"
 
-    assert converted["output"] == output_pdf
-    assert all(path.suffix == ".tiff" for path in converted["paths"])
 
-
-def test_betteria_default_output_path(monkeypatch, tmp_path):
+def test_cmd_enhance_output_dir_name(monkeypatch, tmp_path):
     input_pdf = tmp_path / "letter.pdf"
     input_pdf.write_bytes(b"%PDF")
 
-    png_dir = tmp_path / "pngs"
-    png_dir.mkdir()
-    png_paths = [png_dir / "page-1.png", png_dir / "page-2.png"]
-    for path in png_paths:
-        path.write_bytes(b"PNG")
+    png_paths = [tmp_path / "page-1.png", tmp_path / "page-2.png"]
 
-    monkeypatch.setattr(cli, "pdf_to_images", lambda *_, **__: png_paths)
+    def fake_pdf_to_images(*_, **__):
+        for p in png_paths:
+            p.write_bytes(b"PNG")
+        return png_paths
 
-    def fake_whiten(png_path, tiff_path, **_):
-        Path(tiff_path).write_bytes(b"TIFF")
+    def fake_whiten(png_path, out_path, **_):
+        Path(out_path).write_bytes(b"PNG-enhanced")
 
-    monkeypatch.setattr(cli, "whiten_and_save_as_tiff", fake_whiten)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
-    captured: dict[str, object] = {}
-
-    def fake_convert(tiff_paths, output_pdf_path):
-        captured["paths"] = list(map(Path, tiff_paths))
-        captured["output"] = Path(output_pdf_path)
-
-    monkeypatch.setattr(cli, "convert_tiffs_to_pdf", fake_convert)
-
-    cli.betteria(
+    book_dir = cli.cmd_enhance(
         input_pdf=input_pdf,
-        output_pdf=None,
-        dpi=150,
-        threshold=128,
-        use_adaptive=True,
-        block_size=31,
-        c_val=15,
-        invert=False,
         show_progress=False,
         jobs=1,
     )
 
-    expected_output = input_pdf.with_name(f"{input_pdf.stem}-enhanced.pdf")
-    assert captured["output"] == expected_output
-    assert all(path.suffix == ".tiff" for path in captured["paths"])
+    expected_dir = tmp_path / "letter"
+    assert book_dir == expected_dir
+    assert (book_dir / "artifacts").is_dir()
+    assert (book_dir / "letter.original.pdf").exists()
+
+
+def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    artifacts_dir = book_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (artifacts_dir / "page-1.png").write_bytes(b"PNG1")
+    (artifacts_dir / "page-2.png").write_bytes(b"PNG2")
+    (artifacts_dir / "page-3.png").write_bytes(b"PNG3")
+
+    ocr_texts = {
+        "page-1.png": "Chapter 1: Introduction\nSome text here.",
+        "page-2.png": "More text on page two.",
+        "page-3.png": "Chapter 2: Methods\nDetails about methods.",
+    }
+
+    def fake_ocr_page(image_path, model_path):
+        return ocr_texts[image_path.name]
+
+    def fake_load_ocr_model(model_path):
+        return None, None
+
+    monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
+    monkeypatch.setattr(cli, "_load_ocr_model", fake_load_ocr_model)
+
+    result = cli.cmd_ocr(input_dir=book_dir, show_progress=False)
+
+    assert result == book_dir
+
+    # Per-page .txt files should exist next to PNGs in artifacts/
+    assert (artifacts_dir / "page-1.txt").exists()
+    assert (artifacts_dir / "page-2.txt").exists()
+    assert (artifacts_dir / "page-3.txt").exists()
+
+
+def test_cmd_ocr_skips_existing_txt(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    artifacts_dir = book_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (artifacts_dir / "page-1.png").write_bytes(b"PNG1")
+    (artifacts_dir / "page-2.png").write_bytes(b"PNG2")
+
+    # Pre-existing text for page 1
+    (artifacts_dir / "page-1.txt").write_text("Existing OCR text.", encoding="utf-8")
+
+    ocr_called_for: list[str] = []
+
+    def fake_ocr_page(image_path, model_path):
+        ocr_called_for.append(image_path.name)
+        return "New OCR text for page 2."
+
+    def fake_load_ocr_model(model_path):
+        return None, None
+
+    monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
+    monkeypatch.setattr(cli, "_load_ocr_model", fake_load_ocr_model)
+
+    result = cli.cmd_ocr(input_dir=book_dir, show_progress=False)
+
+    assert result == book_dir
+    # Only page 2 should have been OCR'd
+    assert ocr_called_for == ["page-2.png"]
+    # Page 1 text should be preserved
+    assert (artifacts_dir / "page-1.txt").read_text(encoding="utf-8") == "Existing OCR text."
+
+
+def test_detect_chapters_heuristic():
+    page_texts = [
+        "Chapter 1: The Beginning\nSome text.",
+        "More text here.",
+        "Chapter 2: The Middle\nAnother paragraph.",
+        "Even more text.",
+        "Chapter 3: The End\nFinal text.",
+    ]
+    result = cli._detect_chapters(page_texts)
+    chapters = result["chapters"]
+    assert len(chapters) == 3
+    assert chapters[0]["start_page"] == 1
+    assert chapters[1]["start_page"] == 3
+    assert chapters[2]["start_page"] == 5
+
+
+def test_detect_chapters_strips_headers_and_footers():
+    # Simulate a book where even pages have book title header, odd have chapter
+    # title, and every page has a page number footer.
+    page_texts = [
+        "THE BOOK TITLE\n\nChapter 1: Intro\nSome text.\n\n1",
+        "THE BOOK TITLE\n\nMore text continues.\n\n2",
+        "THE BOOK TITLE\n\nStill chapter one.\n\n3",
+        "THE BOOK TITLE\n\nChapter 2: Middle\nNew stuff.\n\n4",
+        "THE BOOK TITLE\n\nFinal page.\n\n5",
+    ]
+    result = cli._detect_chapters(page_texts)
+    chapters = result["chapters"]
+    # Should find 2 chapters, not be confused by "THE BOOK TITLE" or page numbers
+    assert len(chapters) == 2
+    assert chapters[0]["start_page"] == 1
+    assert chapters[1]["start_page"] == 4
+
+
+def test_detect_chapters_no_match():
+    page_texts = ["Just some text.", "More text without headings."]
+    result = cli._detect_chapters(page_texts)
+    assert len(result["chapters"]) == 1
+    assert result["chapters"][0]["title"] == "Full Text"
+
+
+def test_strip_headers_footers():
+    pages = [
+        "HEADER\n\nContent one.\n\n10",
+        "HEADER\n\nContent two.\n\n11",
+        "HEADER\n\nContent three.\n\n12",
+        "HEADER\n\nContent four.\n\n13",
+    ]
+    cleaned = cli._strip_headers_footers(pages)
+    for c in cleaned:
+        assert "HEADER" not in c
+        assert not c.strip().endswith(("10", "11", "12", "13"))
+
+
+def test_cmd_merge_creates_epub_from_chapters(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    book_dir.mkdir()
+
+    # Set up chapters directory with proofread text
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir()
+    (chapters_dir / "01-intro.txt").write_text(
+        "Hello world.\n\nSecond paragraph.", encoding="utf-8"
+    )
+    (chapters_dir / "02-body.txt").write_text("Main content here.", encoding="utf-8")
+
+    # Metadata file
+    metadata_obj = {
+        "title": "Test Book",
+        "author": "Test Author",
+        "chapters": [
+            {"number": 1, "title": "Intro", "pages": [1, 5], "file": "01-intro.txt"},
+            {"number": 2, "title": "Body", "pages": [6, 10], "file": "02-body.txt"},
+        ],
+    }
+    (book_dir / "metadata.json").write_text(
+        json.dumps(metadata_obj), encoding="utf-8"
+    )
+
+    epub_out, pdf_out = cli.cmd_merge(
+        input_dir=book_dir,
+        epub_only=True,
+        show_progress=False,
+    )
+
+    assert epub_out == book_dir / "book.epub"
+    assert epub_out.exists()
+    assert pdf_out is None
+
+
+def test_cmd_merge_skips_epub_without_chapters(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    artifacts_dir = book_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+
+    from PIL import Image as PILImage
+
+    img = PILImage.new("L", (100, 100), 255)
+    img.save(str(artifacts_dir / "page-1.png"))
+
+    epub_out, pdf_out = cli.cmd_merge(
+        input_dir=book_dir,
+        show_progress=False,
+    )
+
+    assert epub_out is None
+    assert pdf_out == book_dir / "book.pdf"
+    assert pdf_out.exists()
+
+
+def test_cmd_merge_creates_pdf(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    artifacts_dir = book_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+
+    from PIL import Image as PILImage
+
+    img = PILImage.new("L", (100, 100), 255)
+    img.save(str(artifacts_dir / "page-1.png"))
+
+    epub_out, pdf_out = cli.cmd_merge(
+        input_dir=book_dir,
+        show_progress=False,
+    )
+
+    assert epub_out is None  # No chapters dir, no EPUB
+    assert pdf_out == book_dir / "book.pdf"
+    assert pdf_out.exists()
+
+
+def test_cmd_merge_title_override(monkeypatch, tmp_path):
+    book_dir = tmp_path / "book"
+    book_dir.mkdir()
+
+    # Create chapters dir so EPUB gets generated
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir()
+    (chapters_dir / "01-ch.txt").write_text("Text.", encoding="utf-8")
+
+    epub_out, _ = cli.cmd_merge(
+        input_dir=book_dir,
+        title="Override Title",
+        author="Override Author",
+        epub_only=True,
+        show_progress=False,
+    )
+
+    assert epub_out.exists()
+
+
+def test_text_to_html():
+    text = "First paragraph.\n\nSecond paragraph.\n\nThird."
+    html = cli._text_to_html(text)
+    assert "<p>First paragraph.</p>" in html
+    assert "<p>Second paragraph.</p>" in html
+    assert "<p>Third.</p>" in html
+
+
+def test_text_to_html_escapes_entities():
+    text = "A < B & C > D"
+    html = cli._text_to_html(text)
+    assert "&lt;" in html
+    assert "&amp;" in html
+    assert "&gt;" in html
+
+
+def test_slugify():
+    assert cli._slugify("Chapter 1: Introduction") == "chapter-1-introduction"
+    assert cli._slugify("  Hello World!  ") == "hello-world"
+    assert cli._slugify("A" * 100) == "a" * 50
 
 
 def test_main_version_flag(monkeypatch, capsys):
@@ -272,87 +481,34 @@ def test_main_version_flag(monkeypatch, capsys):
     assert cli.__version__ in captured.out
 
 
-def test_main_accepts_auto_jobs(monkeypatch):
+def test_main_no_command(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["betteria"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 1
+
+
+def test_main_enhance_subcommand(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_betteria(**kwargs):
+    def fake_cmd_enhance(**kwargs):
         captured.update(kwargs)
+        return Path("/tmp/out-artifacts")
 
-    monkeypatch.setattr(cli, "betteria", fake_betteria)
+    monkeypatch.setattr(cli, "cmd_enhance", fake_cmd_enhance)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "betteria",
-            "--input",
+            "enhance",
             "input.pdf",
-            "--output",
-            "output.pdf",
+            "--dpi",
+            "200",
             "--jobs",
             "auto",
-        ],
-    )
-
-    cli.main()
-
-    assert captured["jobs"] == 0
-    assert captured["rasterizer"] == "pdftocairo"
-
-
-def test_main_accepts_numeric_jobs(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_betteria(**kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli, "betteria", fake_betteria)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "betteria",
-            "--input",
-            "input.pdf",
-            "--jobs",
-            "3",
-        ],
-    )
-
-    cli.main()
-
-    assert captured["jobs"] == 3
-    assert captured["rasterizer"] == "pdftocairo"
-
-
-def test_main_uses_default_output(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_betteria(**kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli, "betteria", fake_betteria)
-    monkeypatch.setattr(sys, "argv", ["betteria", "--input", "docs/invoice.pdf"])
-
-    cli.main()
-
-    assert captured["output_pdf"] is None
-    assert captured["rasterizer"] == "pdftocairo"
-
-
-def test_main_accepts_rasterizer(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_betteria(**kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli, "betteria", fake_betteria)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "betteria",
-            "--input",
-            "input.pdf",
             "--rasterizer",
             "pdftocairo",
         ],
@@ -360,4 +516,88 @@ def test_main_accepts_rasterizer(monkeypatch):
 
     cli.main()
 
+    assert captured["input_pdf"] == "input.pdf"
+    assert captured["dpi"] == 200
+    assert captured["jobs"] == 0
     assert captured["rasterizer"] == "pdftocairo"
+
+
+def test_main_enhance_defaults(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_enhance(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/out-artifacts")
+
+    monkeypatch.setattr(cli, "cmd_enhance", fake_cmd_enhance)
+    monkeypatch.setattr(sys, "argv", ["betteria", "enhance", "book.pdf"])
+
+    cli.main()
+
+    assert captured["input_pdf"] == "book.pdf"
+    assert captured["dpi"] == 150
+    assert captured["threshold"] == 128
+    assert captured["use_adaptive"] is True
+    assert captured["jobs"] == 0
+    assert captured["rasterizer"] == "pdftocairo"
+    assert captured["show_progress"] is True
+
+
+def test_main_ocr_subcommand(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_ocr(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/book-artifacts")
+
+    monkeypatch.setattr(cli, "cmd_ocr", fake_cmd_ocr)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "ocr",
+            "book-artifacts/",
+            "--model",
+            "custom-model",
+            "--quiet",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["input_dir"] == "book-artifacts/"
+    assert captured["model"] == "custom-model"
+    assert captured["show_progress"] is False
+
+
+def test_main_merge_subcommand(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_merge(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/book.epub"), Path("/tmp/book.pdf")
+
+    monkeypatch.setattr(cli, "cmd_merge", fake_cmd_merge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "merge",
+            "book-chapters/",
+            "--title",
+            "My Book",
+            "--author",
+            "Author",
+            "--epub-only",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["input_dir"] == "book-chapters/"
+    assert captured["title"] == "My Book"
+    assert captured["author"] == "Author"
+    assert captured["epub_only"] is True
+    assert captured["pdf_only"] is False
