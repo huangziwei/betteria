@@ -825,13 +825,19 @@ def cmd_merge(
                     if not filepath.exists():
                         continue
                     text = filepath.read_text(encoding="utf-8")
-                    ch_title = ch.get("title", f"Chapter {ch.get('number', '?')}")
+                    ch_title = (ch.get("title") or "").strip()
+                    if not ch_title:
+                        # Use first few words of the chapter text as title
+                        plain = re.sub(r"[#*>\[\]`]", "", text).strip()
+                        words = plain.split()[:6]
+                        ch_title = " ".join(words).rstrip(".,;:!?") + "…"
                     epub_ch = epub.EpubHtml(
                         title=ch_title,
                         file_name=f"ch_{ch.get('number', 0):03d}.xhtml",
                         lang="en",
                     )
-                    epub_ch.content = f"<h1>{ch_title}</h1>\n{_text_to_html(text)}"
+                    html = _text_to_html(text)
+                    epub_ch.content = f"<h1>{ch_title}</h1>\n{html}"
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
             else:
