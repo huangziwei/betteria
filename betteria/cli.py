@@ -435,15 +435,23 @@ def cmd_enhance(
         )
 
     input_path = Path(input_pdf)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input PDF not found: {input_path}")
 
+    # Derive book directory and original-copy path from the input
     book_dir = input_path.parent / input_path.stem
+    original_copy = book_dir / f"{input_path.stem}.original.pdf"
+
+    if not input_path.exists():
+        # On re-run the PDF has already been moved into the book dir
+        if original_copy.exists():
+            input_path = original_copy
+        else:
+            raise FileNotFoundError(f"Input PDF not found: {input_path}")
+
     book_dir.mkdir(parents=True, exist_ok=True)
 
-    original_copy = book_dir / f"{input_path.stem}.original.pdf"
     if not original_copy.exists():
         shutil.move(str(input_path), original_copy)
+        input_path = original_copy
 
     out_dir = book_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -452,7 +460,7 @@ def cmd_enhance(
         pages_dir = Path(pages_dir_name)
 
         png_paths = pdf_to_images(
-            input_path,
+            original_copy,
             dpi=dpi,
             out_dir=pages_dir,
             show_progress=show_progress,
@@ -746,15 +754,10 @@ def cmd_ocr(
 
 
 def _text_to_html(text: str) -> str:
-    """Convert plain text to basic HTML paragraphs."""
-    paragraphs = re.split(r"\n\s*\n", text.strip())
-    html_parts = []
-    for para in paragraphs:
-        para = para.strip()
-        if para:
-            para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            html_parts.append(f"<p>{para}</p>")
-    return "\n".join(html_parts)
+    """Convert Markdown text to HTML."""
+    import mistune
+
+    return mistune.html(text)
 
 
 def cmd_merge(
@@ -791,8 +794,10 @@ def cmd_merge(
 
     # ── EPUB (only if *-chapters/ exists with proofread text) ──
     if not pdf_only:
-        chapter_txts = sorted(chapters_dir.glob("*.txt")) if chapters_dir.is_dir() else []
-        if chapter_txts:
+        chapter_files = sorted(chapters_dir.glob("*.md")) if chapters_dir.is_dir() else []
+        if not chapter_files:
+            chapter_files = sorted(chapters_dir.glob("*.txt")) if chapters_dir.is_dir() else []
+        if chapter_files:
             from ebooklib import epub
 
             # Read metadata if available
@@ -830,10 +835,10 @@ def cmd_merge(
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
             else:
-                for i, txt_file in enumerate(chapter_txts, 1):
-                    text = txt_file.read_text(encoding="utf-8")
+                for i, ch_file in enumerate(chapter_files, 1):
+                    text = ch_file.read_text(encoding="utf-8")
                     ch_title = (
-                        txt_file.stem.lstrip("0123456789-").replace("-", " ").strip()
+                        ch_file.stem.lstrip("0123456789-").replace("-", " ").strip()
                     )
                     ch_title = ch_title.title() if ch_title else f"Chapter {i}"
                     epub_ch = epub.EpubHtml(
