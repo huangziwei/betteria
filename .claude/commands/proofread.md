@@ -39,6 +39,7 @@ Work in batches of 5-10 pages at a time. For each page:
    - **Strip running headers** (identified in Phase 1) from the top of the page.
    - **Strip page numbers** from wherever they appear.
    - **Strip decorative elements**, figure legends, and table captions.
+   - **Strip figures and diagrams**: remove any inline figures, illustrations, diagrams, and their text labels/captions entirely. Do not replace them with `[Figure: ...]` annotations — just omit them. The surrounding prose that *references* the figure should be kept.
    - **Preserve paragraph structure** — maintain paragraph breaks as they appear in the original.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 3. Write the corrected text to `$ARGUMENTS/artifacts/page-NNN.proofread.txt`.
