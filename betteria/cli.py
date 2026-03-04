@@ -443,7 +443,7 @@ def cmd_enhance(
 
     original_copy = book_dir / f"{input_path.stem}.original.pdf"
     if not original_copy.exists():
-        shutil.copy2(input_path, original_copy)
+        shutil.move(str(input_path), original_copy)
 
     out_dir = book_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
