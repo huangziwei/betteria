@@ -1,4 +1,4 @@
-# betteria (v2)
+# betteria (v0.2)
 
 A commandline pipeline for converting scanned PDFs to EPUB.
 
@@ -71,7 +71,7 @@ betteria ocr -h
     --model MODEL  mlx-vlm model for OCR (default: mlx-community/PaddleOCR-VL-1.5-6bit)
     --quiet        Disable progress bars
 
-To proofread and clean up the OCR text, I use a Claude command to do the job (`.claude/commands/proofread.md`). Run `/proofread <path/to/book-artifacts/folder>` 
+To proofread and clean up the OCR text, I use a Claude command to do the job (`.claude/commands/proofread.md`). Run `/proofread <path/to/book-artifacts/folder>` in a Claude Code session within this repo and Claude should take care of the proofreading.
 
 And finally, to merge the enhanced PNG and proofread TXT into PDF and EPUB:
 
