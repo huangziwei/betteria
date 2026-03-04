@@ -816,6 +816,16 @@ def cmd_merge(
             if book_author:
                 book.add_author(book_author)
 
+            # Cover image
+            cover_path = None
+            for ext in ("png", "jpg", "jpeg"):
+                candidate = book_dir / f"cover.{ext}"
+                if candidate.exists():
+                    cover_path = candidate
+                    break
+            if cover_path:
+                book.set_cover(f"cover{cover_path.suffix}", cover_path.read_bytes())
+
             epub_chapters = []
             chapters_meta = meta.get("chapters", [])
 
