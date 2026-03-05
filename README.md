@@ -1,6 +1,17 @@
 # betteria (v0.2)
 
-A commandline pipeline for converting scanned PDFs to EPUB.
+A command-line pipeline for converting scanned PDFs to EPUB.
+
+```
+enhance ──── ocr ──── proofread ──── merge
+PDF→PNG     PNG→TXT   TXT→chapters   →EPUB/PDF
+```
+
+## Prerequisites
+
+- [Poppler](https://poppler.freedesktop.org/) (`pdftocairo` / `pdftoppm`)
+- Apple Silicon Mac (OCR step uses [mlx-vlm](https://github.com/Blaizzy/mlx-vlm))
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (proofread step)
 
 ## Installation
 
@@ -8,88 +19,48 @@ A commandline pipeline for converting scanned PDFs to EPUB.
 uv sync
 ```
 
-## Usage
+## Quick start
 
 ```bash
-betteria --help
+# 1. Rasterize and binarize scanned pages into clean PNGs
+betteria enhance book.pdf
+
+# 2. OCR the PNGs into per-page text files
+betteria ocr book-artifacts/
+
+# 3. Proofread and chapterize with Claude Code
+#    (run inside this repo in a Claude Code session)
+/proofread book-artifacts/
+
+# 4. Build EPUB and/or enhanced PDF
+betteria merge book-artifacts/
 ```
 
-    usage: betteria [-h] [-v] {enhance,ocr,merge} ...
+## Commands
 
-    OCR and EPUB pipeline for scanned PDFs.
+### `betteria enhance <input.pdf>`
 
-    positional arguments:
-    {enhance,ocr,merge}
-        enhance            Rasterize and enhance a scanned PDF into clean PNGs.
-        ocr                OCR enhanced PNGs into per-page text files.
-        merge              Build EPUB from proofread chapters and/or enhanced PDF from PNGs.
+Rasterizes each page and applies adaptive thresholding to produce clean black-and-white PNGs. Key options:
 
-    options:
-    -h, --help           show this help message and exit
-    -v, --version        show program's version number and exit
+- `--dpi` — resolution for rasterizing (default: 150)
+- `--adaptive` / `--threshold` — adaptive vs. global binarization
+- `--invert` — invert pixels before thresholding
+- `--jobs` — parallel workers (default: all cores)
+- `--rasterizer` — `pdftocairo` (default) or `pdftoppm`
 
-To enhance the scanned PDF into OCR-able PNGs:
+### `betteria ocr <book-dir>`
 
-```bash
-betteria enhance -h
-```
+Runs a local VLM on the enhanced PNGs to produce per-page `.txt` files.
 
-    usage: betteria enhance [-h] [--dpi DPI] [--threshold THRESHOLD] [--block-size BLOCK_SIZE] [--c-val C_VAL] [--adaptive] [--invert] [--quiet] [--jobs JOBS] [--rasterizer {pdftoppm,pdftocairo}] input
+- `--model` — mlx-vlm model (default: `mlx-community/PaddleOCR-VL-1.5-6bit`)
 
-    positional arguments:
-    input                 Path to input PDF
+### `betteria merge <book-dir>`
 
-    options:
-    -h, --help            show this help message and exit
-    --dpi DPI             DPI for rasterizing PDF pages (default: 150)
-    --threshold THRESHOLD
-                            Global threshold value 0-255 (default: 128; ignored when adaptive)
-    --block-size BLOCK_SIZE
-                            Neighborhood size for adaptive thresholding (default: 31)
-    --c-val C_VAL         Constant for adaptive thresholding (default: 15)
-    --adaptive            Use adaptive thresholding (default: on)
-    --invert              Invert pixels before thresholding
-    --quiet               Disable progress bars
-    --jobs JOBS           Parallel workers ('auto'/0 = all cores; 1 = single thread)
-    --rasterizer {pdftoppm,pdftocairo}
-                            Poppler backend (default: pdftocairo)
+Combines proofread text and enhanced images into final outputs.
 
+- `--title` / `--author` — override metadata
+- `--epub-only` / `--pdf-only` — generate only one format
 
-To extract text from the images:
+---
 
-```bash
-betteria ocr -h    
-```
-
-    usage: betteria ocr [-h] [--model MODEL] [--quiet] input
-
-    positional arguments:
-    input          Path to book directory
-
-    options:
-    -h, --help     show this help message and exit
-    --model MODEL  mlx-vlm model for OCR (default: mlx-community/PaddleOCR-VL-1.5-6bit)
-    --quiet        Disable progress bars
-
-To proofread and clean up the OCR text, I use a Claude command to do the job (`.claude/commands/proofread.md`). Run `/proofread <path/to/book-artifacts/folder>` in a Claude Code session within this repo and Claude should take care of the proofreading.
-
-And finally, to merge the enhanced PNG and proofread TXT into PDF and EPUB:
-
-```bash
-betteria merge -h
-```
-    usage: betteria merge [-h] [--title TITLE] [--author AUTHOR] [--epub-only] [--pdf-only] [--quiet] input
-
-    positional arguments:
-    input            Path to book directory
-
-    options:
-    -h, --help       show this help message and exit
-    --title TITLE    Override book title from metadata
-    --author AUTHOR  Override author from metadata
-    --epub-only      Only generate EPUB (skip PDF)
-    --pdf-only       Only generate PDF (skip EPUB)
-    --quiet          Disable progress bars
-
-> ### NOTE
-> `betteria` v0.1 was for enhancing scanned PDF readability on E-Ink devices only, while v0.2 focuses on convert the PDF to EPUB. The old behavior is preserved if you skip the `betteria ocr` step, which is now done in two separated steps (`betteria enhanced` + `betteria merge`). v0.1.2 is still on PyPI can can be installed via `pip install betteria`. v0.2 will not be on PyPI. 
+> **Note:** v0.1 only enhanced scanned PDFs for e-ink readability. v0.2 adds the full OCR-to-EPUB pipeline. The old enhance-only behavior still works if you skip `ocr` — just run `enhance` + `merge`. v0.1.2 remains on PyPI (`pip install betteria`); v0.2 will not be published there.
