@@ -846,7 +846,8 @@ def cmd_merge(
                         file_name=f"ch_{ch.get('number', 0):03d}.xhtml",
                         lang="en",
                     )
-                    html = _text_to_html(text)
+                    body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
+                    html = _text_to_html(body)
                     epub_ch.content = f"<h1>{ch_title}</h1>\n{html}"
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
@@ -862,7 +863,8 @@ def cmd_merge(
                         file_name=f"ch_{i:03d}.xhtml",
                         lang="en",
                     )
-                    epub_ch.content = f"<h1>{ch_title}</h1>\n{_text_to_html(text)}"
+                    body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
+                    epub_ch.content = f"<h1>{ch_title}</h1>\n{_text_to_html(body)}"
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
 
