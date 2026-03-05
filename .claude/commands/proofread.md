@@ -98,6 +98,7 @@ Using the chapter boundaries identified in Phase 1 and the proofread page texts 
      5. **Default to joining**: when in doubt, join. A false paragraph break is worse than a missing one, because it fragments the author's prose.
    - Skip any `[BLANK PAGE]` entries.
    - **Preserve Markdown formatting** from the proofread files.
+   - **Chapter headings**: Each chapter file must start with a proper markdown heading using `##`. For example: `## PREFACE`, `## I · THE EARLY YEARS`. Use `##` (not bold `**`) so that epub generators can use these as chapter titles without duplication. If the book uses roman numerals or chapter numbers before the title, combine them: `## IV · KITCHEN BIOGRAPHY`.
    - Write the merged text to `$ARGUMENTS/chapters/NN-slug.md` where `NN` is a zero-padded chapter number and `slug` is a lowercase-hyphenated version of the chapter title (e.g. `01-introduction.md`, `02-reality.md`).
 3. After writing each chapter file, verify it contains no `[FIGURE:` or `[IMAGE:` lines. If any are found, remove them.
 4. Write `$ARGUMENTS/metadata.json` with this exact schema:
