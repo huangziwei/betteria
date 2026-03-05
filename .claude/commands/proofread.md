@@ -41,7 +41,7 @@ Process every content page (skipping front/back matter identified in Phase 1).
 
 ### Processing each page
 
-Work in batches of 5-10 pages at a time. For each page:
+Process **one page at a time**, sequentially. Do NOT use batch processing or subagents — work through each page yourself in order. For each page:
 
 1. Read the PNG via vision and the OCR `.txt` file side by side.
 2. Produce corrected text:
