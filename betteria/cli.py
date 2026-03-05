@@ -752,6 +752,89 @@ def cmd_ocr(
 
 # ── Subcommand: merge ────────────────────────────────────────────────
 
+# Adapted from Standard Ebooks (standardebooks.org) core.css
+_EPUB_CSS = """\
+@charset "utf-8";
+@namespace epub "http://www.idpf.org/2007/ops";
+
+body{
+	hyphens: auto;
+	-epub-hyphens: auto;
+	font-variant-numeric: oldstyle-nums;
+	text-wrap: pretty;
+}
+
+p{
+	margin: 0;
+	text-indent: 1em;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6{
+	break-after: avoid;
+	break-inside: avoid;
+	font-variant: small-caps;
+	hyphens: none;
+	-epub-hyphens: none;
+	margin: 3em 0;
+	text-align: center;
+}
+
+h2 + p,
+h3 + p,
+h4 + p,
+h5 + p,
+h6 + p,
+hr + p,
+header + p,
+p:first-child{
+	text-indent: 0;
+}
+
+hr{
+	border: none;
+	border-top: 1px solid;
+	height: 0;
+	margin: 1.5em auto;
+	width: 25%;
+}
+
+blockquote{
+	margin: 1em 2.5em;
+}
+
+blockquote cite{
+	display: block;
+	font-style: italic;
+	text-align: right;
+}
+
+ol,
+ul{
+	margin-bottom: 1em;
+	margin-top: 1em;
+}
+
+abbr{
+	border: none;
+	white-space: nowrap;
+}
+
+cite{
+	font-style: normal;
+}
+
+i > i,
+em > i,
+i > em{
+	font-style: normal;
+}
+"""
+
 
 def _text_to_html(text: str) -> str:
     """Convert Markdown text to HTML."""
@@ -826,6 +909,14 @@ def cmd_merge(
             if cover_path:
                 book.set_cover(f"cover{cover_path.suffix}", cover_path.read_bytes())
 
+            style = epub.EpubItem(
+                uid="style",
+                file_name="style/default.css",
+                media_type="text/css",
+                content=_EPUB_CSS.encode("utf-8"),
+            )
+            book.add_item(style)
+
             epub_chapters = []
             chapters_meta = meta.get("chapters", [])
 
@@ -849,6 +940,7 @@ def cmd_merge(
                     body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
                     html = _text_to_html(body)
                     epub_ch.content = f"<h1>{ch_title}</h1>\n{html}"
+                    epub_ch.add_item(style)
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
             else:
@@ -865,6 +957,7 @@ def cmd_merge(
                     )
                     body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
                     epub_ch.content = f"<h1>{ch_title}</h1>\n{_text_to_html(body)}"
+                    epub_ch.add_item(style)
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
 
