@@ -49,7 +49,7 @@ Work in batches of 5-10 pages at a time. For each page:
    - **Strip running headers** (identified in Phase 1) from the top of the page.
    - **Strip page numbers** from wherever they appear.
    - **Strip decorative elements**, figure legends, and table captions.
-   - **Strip figures and diagrams**: remove any inline figures, illustrations, diagrams, and their text labels/captions entirely. Do not replace them with `[Figure: ...]` annotations — just omit them. The surrounding prose that *references* the figure should be kept.
+   - **Strip figures and diagrams**: remove any inline figures, illustrations, diagrams, and their text labels/captions entirely. Do NOT insert any placeholder or description such as `[FIGURE: ...]`, `[Figure: ...]`, `[IMAGE: ...]`, or similar annotations — just omit the figure completely and silently. The surrounding prose that *references* the figure should be kept.
    - **Preserve paragraph structure** — maintain paragraph breaks as they appear in the original.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 
@@ -72,6 +72,16 @@ Do NOT summarize or paraphrase — reproduce the author's exact text with only O
 
 ---
 
+## Phase 2.5: Post-proofread cleanup
+
+After all pages are proofread, scan for any `[FIGURE:` or `[IMAGE:` annotations that may have slipped through despite instructions:
+
+1. Grep all `*.proofread.txt` files for lines matching `^\[FIGURE:` or `^\[IMAGE:`.
+2. For each match, read the corresponding PNG to determine whether the line is a figure description or actual book text.
+3. Remove any figure description lines. If removing the line leaves the page empty (or only whitespace), replace the content with `[BLANK PAGE]`.
+
+---
+
 ## Phase 3: Chapterize
 
 Using the chapter boundaries identified in Phase 1 and the proofread page texts from Phase 2:
@@ -89,7 +99,8 @@ Using the chapter boundaries identified in Phase 1 and the proofread page texts 
    - Skip any `[BLANK PAGE]` entries.
    - **Preserve Markdown formatting** from the proofread files.
    - Write the merged text to `$ARGUMENTS/chapters/NN-slug.md` where `NN` is a zero-padded chapter number and `slug` is a lowercase-hyphenated version of the chapter title (e.g. `01-introduction.md`, `02-reality.md`).
-3. Write `$ARGUMENTS/metadata.json` with this exact schema:
+3. After writing each chapter file, verify it contains no `[FIGURE:` or `[IMAGE:` lines. If any are found, remove them.
+4. Write `$ARGUMENTS/metadata.json` with this exact schema:
 
 ```json
 {
