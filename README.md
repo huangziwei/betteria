@@ -9,9 +9,12 @@ PDF→PNG     PNG→TXT   TXT→chapters   →EPUB/PDF
 
 ## Prerequisites
 
-- [Poppler](https://poppler.freedesktop.org/) (`pdftocairo` / `pdftoppm`)
-- Apple Silicon Mac (OCR step uses [mlx-vlm](https://github.com/Blaizzy/mlx-vlm))
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (proofread step)
+Apple Silicon only (the OCR step runs locally via [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). The proofreading is done with [Claude Code](https://code.claude.com/docs). 
+
+```bash
+brew install poppler    # provides pdftocairo / pdftoppm for rasterizing
+brew install uv         # Python package manager
+```
 
 ## Installation
 
