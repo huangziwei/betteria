@@ -98,24 +98,60 @@ After all pages are proofread, scan for any `[FIGURE:` or `[IMAGE:` annotations 
 
 ## Phase 3: Chapterize
 
-Using the chapter boundaries identified in Phase 1 and the proofread page texts from Phase 2:
+Use a **script-first approach** for efficiency: write a Python stitching script that processes all chapters at once, then verify and fix the output. Do NOT stitch chapters one at a time by reading each page manually.
 
-1. Create the directory `$ARGUMENTS/chapters/` (if it doesn't already exist).
-2. For each chapter/section:
-   - **Single-page**: Read all `page-NNN.proofread.txt` files in the chapter's page range.
-   - **Double-page spread**: Read `-L` and `-R` files in book-page order (left before right, or right before left, depending on which has the lower book page number).
-   - **Stitch page breaks** — this is the most critical step. Pages often break in the middle of a sentence or paragraph. You must reconstruct the correct paragraph structure:
-     1. **Remove hyphenation**: if a page ends with a hyphenated word (e.g. `con-`), join it with the first word of the next page (`concept`).
-     2. **Join mid-sentence breaks**: if a page ends without sentence-ending punctuation (`.` `?` `!` or a closing quote after such punctuation), the next page is a direct continuation — join with a single space, **no paragraph break**.
-     3. **Join mid-paragraph breaks**: even if a page ends with a complete sentence, the next page may continue the *same paragraph*. Check the last paragraph of page N and the first paragraph of page N+1 — if they form one logical paragraph, join them with a single space. Look at the original PNGs at page boundaries if needed: a new paragraph in the original is indicated by indentation or extra vertical space on the printed page. If the next page's text starts flush left with no indentation, it is the same paragraph.
-     4. **Preserve real paragraph breaks**: only insert a double newline (`\n\n`) at a page boundary when the original book genuinely starts a new paragraph on the next page.
-     5. **Default to joining**: when in doubt, join. A false paragraph break is worse than a missing one, because it fragments the author's prose.
-   - Skip any `[BLANK PAGE]` entries.
-   - **Preserve Markdown formatting** from the proofread files.
-   - **Chapter headings**: Each chapter file must start with a proper markdown heading using `##`. For example: `## PREFACE`, `## I · THE EARLY YEARS`. Use `##` (not bold `**`) so that epub generators can use these as chapter titles without duplication. If the book uses roman numerals or chapter numbers before the title, combine them: `## IV · KITCHEN BIOGRAPHY`.
-   - Write the merged text to `$ARGUMENTS/chapters/NN-slug.md` where `NN` is a zero-padded chapter number and `slug` is a lowercase-hyphenated version of the chapter title (e.g. `01-introduction.md`, `02-reality.md`).
-3. After writing each chapter file, verify it contains no `[FIGURE:` or `[IMAGE:` lines. If any are found, remove them.
-4. Write `$ARGUMENTS/metadata.json` with this exact schema:
+### Step 1: Write a stitching script
+
+Write a Python script (`$ARGUMENTS/stitch.py`) that:
+
+1. Defines the chapter list with page ranges (from Phase 1 findings).
+2. For each chapter, reads all `page-NNN.proofread.txt` files in range.
+3. At each page boundary, applies these rules automatically:
+   - If the next page starts with a `#` heading → new section (paragraph break).
+   - If the current page ends with `word-` (hyphenation) → join the word, no break.
+   - If the current page ends **without** sentence-ending punctuation (`.?!"')]}`) → mid-sentence, join with space.
+   - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
+4. Strips `Chapter N` lines that precede `##` chapter title headings.
+5. Cleans up triple+ newlines.
+6. Writes each chapter to `$ARGUMENTS/chapters/NN-slug.md`.
+7. Writes `$ARGUMENTS/metadata.json`.
+8. Reports how many `<!--PB:-->` markers remain per chapter.
+
+### Step 2: Resolve paragraph boundary markers
+
+The `<!--PB:NNN-->` markers indicate ambiguous page boundaries (page ends with a sentence, next page could be new paragraph or continuation). Resolve them **in bulk**:
+
+1. Extract all PB page numbers from the chapter files.
+2. For each PB at page N, check the PNG of page **N+1** to see if the first body text line (below the running header) is:
+   - **Indented** → new paragraph (keep the break, remove marker)
+   - **Flush left** → continuation (join with space, remove marker)
+3. Use **parallel subagents** (4-5 agents, ~10 pages each) to check all PNGs at once. Each agent reads the PNGs and reports `PB:N → INDENTED` or `PB:N → FLUSH`.
+4. Write a second Python script (`$ARGUMENTS/resolve_pb.py`) that applies the results: replace `\n\n<!--PB:N-->\n\n` with a space (for FLUSH) or `\n\n` (for INDENTED).
+
+### Step 3: Verify
+
+After resolving all markers, verify:
+- No `<!--PB:` markers remain
+- No `[FIGURE:` or `[IMAGE:` lines
+- No `[BLANK PAGE]` entries
+- No trailing word-hyphens (`\w-$` at line ends)
+- Every chapter file starts with `## `
+- Word counts look reasonable
+
+### Chapter file requirements
+
+- If the original book page has a chapter/section title, the chapter file must start with a proper markdown heading using `##`. For example: `## PREFACE`, `## I · THE EARLY YEARS`. Use `##` (not bold `**`) so that epub generators can use these as chapter titles without duplication. If the book uses roman numerals or chapter numbers before the title, combine them: `## IV · KITCHEN BIOGRAPHY`. If the original has no title (e.g. an epigraph page, dedication), do NOT invent a heading — just start with the content.
+- Write the merged text to `$ARGUMENTS/chapters/NN-slug.md` where `NN` is a zero-padded chapter number and `slug` is a lowercase-hyphenated version of the chapter title (e.g. `01-introduction.md`, `02-reality.md`).
+- Skip any `[BLANK PAGE]` entries.
+- Preserve Markdown formatting from the proofread files.
+
+### Clean up
+
+Delete the temporary scripts (`stitch.py`, `resolve_pb.py`) after verification.
+
+### metadata.json
+
+Write `$ARGUMENTS/metadata.json` with this exact schema:
 
 ```json
 {
@@ -143,4 +179,4 @@ Where `pages` is `[first_page, last_page]` inclusive.
 - Preserve the author's formatting choices (italics indicated by emphasis, paragraph breaks, section breaks within chapters).
 - If you encounter an ambiguous word, use the context of the sentence and the visual appearance to determine the correct reading.
 - Work systematically through all pages — do not skip content pages.
-- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. During chapterization, always check whether text flows continuously across a page boundary. Read the ending of page N and the beginning of page N+1 together as prose — if it reads as one paragraph, merge them. Refer back to the PNGs when unsure.
+- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. The stitching script handles unambiguous cases (mid-sentence, hyphenation) automatically. For ambiguous boundaries (sentence ends at page break), the script inserts `<!--PB:N-->` markers. These are resolved in bulk by checking indentation in the next page's PNG — use parallel subagents for efficiency.
