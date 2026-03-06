@@ -196,7 +196,7 @@ def test_cmd_enhance_coordinates_pipeline(monkeypatch, tmp_path):
         captured_jobs,
         captured_rasterizer,
     ) = captured["pdf_to_images"]
-    assert captured_input == input_pdf
+    assert captured_input == book_dir / "doc.original.pdf"
     assert captured_dpi == 100
     assert captured_progress is False
     assert captured_out_dir.name.startswith("betteria-pages-")
