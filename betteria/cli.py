@@ -934,49 +934,46 @@ def cmd_merge(
                     if not filepath.exists():
                         continue
                     text = filepath.read_text(encoding="utf-8")
-                    ch_title = (ch.get("title") or "").strip()
-                    has_heading = bool(re.match(r"\s*#{1,6}\s+", text))
-                    if not ch_title:
-                        if has_heading:
-                            m = re.match(r"\s*#{1,6}\s+(.*)", text)
-                            ch_title = m.group(1).strip() if m else ""
-                        if not ch_title:
-                            # Use first few words of the chapter text as title
-                            plain = re.sub(r"[#*>\[\]`]", "", text).strip()
-                            words = plain.split()[:6]
-                            ch_title = " ".join(words).rstrip(".,;:!?") + "…"
+                    heading_match = re.match(r"\s*#{1,6}\s+(.*)", text)
+                    if heading_match:
+                        ch_title = heading_match.group(1).strip()
+                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
+                        html = _text_to_html(body)
+                        content = f"<h1>{ch_title}</h1>\n{html}"
+                    else:
+                        # No heading: pseudo-title for TOC only
+                        plain = re.sub(r"[#*>\[\]`]", "", text).strip()
+                        words = plain.split()[:6]
+                        ch_title = " ".join(words).rstrip(".,;:!?") + "…"
+                        content = _text_to_html(text)
                     epub_ch = epub.EpubHtml(
                         title=ch_title,
                         file_name=f"ch_{ch.get('number', 0):03d}.xhtml",
                         lang="en",
                     )
-                    if has_heading:
-                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
-                        html = _text_to_html(body)
-                        epub_ch.content = f"<h1>{ch_title}</h1>\n{html}"
-                    else:
-                        epub_ch.content = _text_to_html(text)
+                    epub_ch.content = content
                     epub_ch.add_item(style)
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
             else:
                 for i, ch_file in enumerate(chapter_files, 1):
                     text = ch_file.read_text(encoding="utf-8")
-                    has_heading = bool(re.match(r"\s*#{1,6}\s+", text))
-                    ch_title = (
-                        ch_file.stem.lstrip("0123456789-").replace("-", " ").strip()
-                    )
-                    ch_title = ch_title.title() if ch_title else f"Chapter {i}"
+                    heading_match = re.match(r"\s*#{1,6}\s+(.*)", text)
+                    if heading_match:
+                        ch_title = heading_match.group(1).strip()
+                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
+                        content = f"<h1>{ch_title}</h1>\n{_text_to_html(body)}"
+                    else:
+                        plain = re.sub(r"[#*>\[\]`]", "", text).strip()
+                        words = plain.split()[:6]
+                        ch_title = " ".join(words).rstrip(".,;:!?") + "…"
+                        content = _text_to_html(text)
                     epub_ch = epub.EpubHtml(
                         title=ch_title,
                         file_name=f"ch_{i:03d}.xhtml",
                         lang="en",
                     )
-                    if has_heading:
-                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
-                        epub_ch.content = f"<h1>{ch_title}</h1>\n{_text_to_html(body)}"
-                    else:
-                        epub_ch.content = _text_to_html(text)
+                    epub_ch.content = content
                     epub_ch.add_item(style)
                     book.add_item(epub_ch)
                     epub_chapters.append(epub_ch)
