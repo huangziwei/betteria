@@ -701,6 +701,14 @@ def cmd_ocr(
     skipped, so the command is safe to re-run after partial completion or
     after manually editing individual page texts.
     """
+    try:
+        import mlx_vlm  # noqa: F401
+    except ImportError:
+        raise SystemExit(
+            "The 'ocr' command requires mlx-vlm, which is not installed.\n"
+            "Install it with: uv sync --extra ocr"
+        )
+
     input_path = Path(input_dir)
     if not input_path.is_dir():
         raise NotADirectoryError(f"Input must be a directory: {input_path}")
