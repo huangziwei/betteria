@@ -16,7 +16,7 @@ You will work through three phases. Be methodical and thorough.
      - Check the image aspect ratio: if width > height, it is a double-page spread
      - If double-page spread, check whether page numbers appear in pairs (left + right)
    - **Front matter to skip**: title pages, copyright, dedication, blank pages, table of contents — note exact page numbers
-   - **Back matter to skip**: author bio, praise quotes, ads, blank pages — note exact page numbers
+   - **Back matter to skip**: footnotes/endnotes, references/bibliography, index, appendices, author bio, praise quotes, ads, blank pages — note exact page numbers
    - **Content page range**: the first and last pages of actual book content
    - **Section/chapter structure**: identify all chapter or section boundaries and their titles (they may be named sections like "INTRODUCTION", "PARTIES" rather than "Chapter 1", "Chapter 2")
    - **Running headers pattern**: e.g. alternating book title on even pages / section name on odd pages
@@ -50,6 +50,7 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - **Strip page numbers** from wherever they appear.
    - **Strip decorative elements**, figure legends, and table captions.
    - **Strip figures and diagrams**: remove any inline figures, illustrations, diagrams, and their text labels/captions entirely. Do NOT insert any placeholder or description such as `[FIGURE: ...]`, `[Figure: ...]`, `[IMAGE: ...]`, or similar annotations — just omit the figure completely and silently. The surrounding prose that *references* the figure should be kept.
+   - **Strip footnote anchors**: remove superscript footnote markers (e.g. `¹`, `²`, `³`, `[1]`, `*`) from the body text. Since footnotes/endnotes are excluded from the final output, dangling anchors serve no purpose and won't render correctly in markdown or epub.
    - **Preserve paragraph structure** — maintain paragraph breaks as they appear in the original.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 
