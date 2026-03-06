@@ -841,6 +841,10 @@ em > i,
 i > em{
 	font-style: normal;
 }
+
+p:has(br){
+	text-indent: 0;
+}
 """
 
 

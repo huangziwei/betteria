@@ -66,6 +66,13 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - `> ` prefix for blockquotes / indented definition blocks (e.g. sidebars, callout boxes)
      - Include bold title lines within blockquotes: `> **against policy (a tiny manifesto):**`
    - `---` for section breaks (instead of bare `*` or other decorative dividers)
+   - **Markdown line breaks** (`  ` — two trailing spaces) for consecutive lines that should render on separate lines but are NOT separate paragraphs. Use this for bibliography entries, lists of works/titles, poetry lines, and similar content where each line must stay distinct but belongs to one logical group. Without trailing spaces, consecutive lines merge into a single line in epub rendering. Example:
+     ```
+     *Grand Guignol* (1929).
+     *It Walks by Night* (1930).
+     *The Lost Gallows* (1931).
+     ```
+     (Note: the last line in a group does not need trailing spaces.)
    - Paragraph breaks remain as double newlines
 
 4. **Output files**:
