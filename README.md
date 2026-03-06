@@ -9,7 +9,7 @@ PDF→PNG     PNG→TXT   TXT→chapters   →EPUB/PDF
 
 ## Prerequisites
 
-Apple Silicon only (the OCR step runs locally via [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). The proofreading is done with [Claude Code](https://code.claude.com/docs). 
+Apple Silicon only (the OCR step runs locally via [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). The proofreading is done with [Claude Code](https://code.claude.com/docs).
 
 ```bash
 brew install poppler    # provides pdftocairo / pdftoppm for rasterizing
@@ -19,7 +19,7 @@ brew install uv         # Python package manager
 ## Installation
 
 ```bash
-uv sync
+uv sync --extra ocr
 ```
 
 ## Quick start
@@ -66,4 +66,4 @@ Combines proofread text and enhanced images into final outputs.
 
 ---
 
-> **Note:** v0.1 only enhanced scanned PDFs for e-ink readability. v0.2 adds the full OCR-to-EPUB pipeline. The old enhance-only behavior still works if you skip `ocr` — just run `enhance` + `merge`. v0.1.2 remains on PyPI (`pip install betteria`); v0.2 will not be published there.
+> **Note:** v0.1 only enhanced scanned PDFs for e-ink readability. v0.2 adds the full OCR-to-EPUB pipeline. The old enhance-only behavior still works if you skip `ocr` — just run `enhance` + `merge`.
