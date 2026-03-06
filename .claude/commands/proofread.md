@@ -111,7 +111,7 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
    - If the current page ends with `word-` (hyphenation) → join the word, no break.
    - If the current page ends **without** sentence-ending punctuation (`.?!"')]}`) → mid-sentence, join with space.
    - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
-4. Strips `Chapter N` lines that precede `##` chapter title headings.
+4. Merges `## Chapter N` + `## Title` into a single heading `## Chapter N: Title` (preserving chapter numbers from the original).
 5. Cleans up triple+ newlines.
 6. Writes each chapter to `$ARGUMENTS/chapters/NN-slug.md`.
 7. Writes `$ARGUMENTS/metadata.json`.
