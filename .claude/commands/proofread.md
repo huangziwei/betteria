@@ -57,6 +57,11 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
 3. **Markdown formatting** (apply to both single-page and double-page layouts):
    - `*italic*` for italic text
    - `**bold**` for bold text
+   - **Headings**: Use proper markdown headings for section/chapter titles that appear on the page — not bold text. Use heading levels to reflect the book's hierarchy:
+     - `##` for chapter titles (e.g. `## Chapter 1` or `## Three Ways of Talking about Value`)
+     - `###` for major section subheadings within a chapter (e.g. `### I: Clyde Kluckhohn's value project`)
+     - `####` for sub-subheadings if the book has a third level
+     - When in doubt about the level, use `###` for any named section within a chapter.
    - `> ` prefix for blockquotes / indented definition blocks (e.g. sidebars, callout boxes)
      - Include bold title lines within blockquotes: `> **against policy (a tiny manifesto):**`
    - `---` for section breaks (instead of bare `*` or other decorative dividers)
