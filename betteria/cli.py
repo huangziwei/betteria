@@ -525,6 +525,99 @@ def cmd_enhance(
     return book_dir
 
 
+# ── Subcommand: extract ───────────────────────────────────────────────
+
+
+def _extract_text_page(
+    pdf_path: Path, page: int, txt_path: Path
+) -> None:
+    """Extract embedded text from a single PDF page via ``pdftotext``."""
+    try:
+        result = subprocess.run(
+            ["pdftotext", "-f", str(page), "-l", str(page), str(pdf_path), "-"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Poppler's 'pdftotext' not found. Install Poppler or add it to PATH."
+        ) from None
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Error running pdftotext for page {page}: {e.stderr.decode().strip()}"
+        )
+
+    txt_path.write_text(result.stdout.decode("utf-8"), encoding="utf-8")
+
+
+def cmd_extract(
+    input_pdf: Path | str,
+    dpi: int = 300,
+    show_progress: bool = True,
+    jobs: int = 0,
+    rasterizer: Rasterizer = "pdftocairo",
+) -> Path:
+    """Extract per-page PNGs and embedded text from a digital (non-scanned) PDF."""
+    if dpi <= 0:
+        raise ValueError("DPI must be a positive integer")
+
+    input_path = Path(input_pdf)
+
+    book_dir = input_path.parent / input_path.stem
+    original_copy = book_dir / f"{input_path.stem}.original.pdf"
+
+    if not input_path.exists():
+        if original_copy.exists():
+            input_path = original_copy
+        else:
+            raise FileNotFoundError(f"Input PDF not found: {input_path}")
+
+    book_dir.mkdir(parents=True, exist_ok=True)
+
+    if not original_copy.exists():
+        shutil.move(str(input_path), original_copy)
+        input_path = original_copy
+
+    out_dir = book_dir / "artifacts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rasterize directly into artifacts/ (no thresholding needed)
+    png_paths = pdf_to_images(
+        original_copy,
+        dpi=dpi,
+        out_dir=out_dir,
+        show_progress=show_progress,
+        jobs=jobs,
+        rasterizer=rasterizer,
+    )
+
+    if not png_paths:
+        raise RuntimeError("No PNG pages generated from input PDF")
+
+    # Rename Poppler output (page-1.png, page-2.png, ...) to zero-padded names
+    width = len(str(len(png_paths)))
+    final_paths: list[Path] = []
+    for i, raw_path in enumerate(png_paths):
+        final = out_dir / f"page-{i + 1:0{width}d}.png"
+        if raw_path != final:
+            raw_path.rename(final)
+        final_paths.append(final)
+
+    # Extract embedded text per page
+    total_pages = len(final_paths)
+    with _progress(total_pages, "Extracting text", show_progress) as (
+        progress,
+        task_id,
+    ):
+        for i, png_path in enumerate(final_paths):
+            txt_path = png_path.with_suffix(".txt")
+            _extract_text_page(original_copy, i + 1, txt_path)
+            progress.advance(task_id, 1)
+
+    return book_dir
+
+
 # ── Subcommand: ocr ──────────────────────────────────────────────────
 
 _DEFAULT_OCR_MODEL = "mlx-community/PaddleOCR-VL-1.5-6bit"
@@ -1087,6 +1180,36 @@ def main():
         help="Poppler backend (default: pdftocairo)",
     )
 
+    # ── extract ──
+    p_extract = subparsers.add_parser(
+        "extract",
+        help="Extract per-page PNGs and embedded text from a digital PDF.",
+    )
+    p_extract.add_argument("input", help="Path to input PDF")
+    p_extract.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI for rasterizing PDF pages (default: 300)",
+    )
+    p_extract.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Disable progress bars",
+    )
+    p_extract.add_argument(
+        "--jobs",
+        type=_coerce_jobs,
+        default=0,
+        help="Parallel workers ('auto'/0 = all cores; 1 = single thread)",
+    )
+    p_extract.add_argument(
+        "--rasterizer",
+        choices=["pdftoppm", "pdftocairo"],
+        default="pdftocairo",
+        help="Poppler backend (default: pdftocairo)",
+    )
+
     # ── ocr ──
     p_ocr = subparsers.add_parser(
         "ocr",
@@ -1158,6 +1281,16 @@ def main():
             rasterizer=args.rasterizer,
         )
         console.print(f"[green]Enhanced PNGs saved to {out_dir}[/green]")
+
+    elif args.command == "extract":
+        out_dir = cmd_extract(
+            input_pdf=args.input,
+            dpi=args.dpi,
+            show_progress=not args.quiet,
+            jobs=args.jobs,
+            rasterizer=args.rasterizer,
+        )
+        console.print(f"[green]Extracted PNGs and text to {out_dir}[/green]")
 
     elif args.command == "ocr":
         out_dir = cmd_ocr(

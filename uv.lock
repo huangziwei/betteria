@@ -159,13 +159,12 @@ wheels = [
 
 [[package]]
 name = "betteria"
-version = "0.1.2"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "ebooklib" },
     { name = "img2pdf" },
     { name = "mistune" },
-    { name = "mlx-vlm" },
     { name = "opencv-python" },
     { name = "pdf2image" },
     { name = "pillow" },
@@ -179,6 +178,9 @@ dev = [
     { name = "ruff" },
     { name = "twine" },
 ]
+ocr = [
+    { name = "mlx-vlm" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -186,7 +188,7 @@ requires-dist = [
     { name = "img2pdf", specifier = ">=0.6.0" },
     { name = "maturin", marker = "extra == 'dev'" },
     { name = "mistune", specifier = ">=3.0" },
-    { name = "mlx-vlm", specifier = ">=0.3.11" },
+    { name = "mlx-vlm", marker = "extra == 'ocr'", specifier = ">=0.3.11" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pdf2image", specifier = ">=1.17.0" },
     { name = "pillow", specifier = ">=11.2.1" },
@@ -195,7 +197,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "twine", marker = "extra == 'dev'" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["ocr", "dev"]
 
 [[package]]
 name = "certifi"

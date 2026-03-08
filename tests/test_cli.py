@@ -233,6 +233,131 @@ def test_cmd_enhance_output_dir_name(monkeypatch, tmp_path):
     assert (book_dir / "letter.original.pdf").exists()
 
 
+def test_cmd_extract_produces_pngs_and_txt(monkeypatch, tmp_path):
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        # Simulate Poppler output (non-zero-padded names)
+        pages = [out_dir / "page-1.png", out_dir / "page-2.png"]
+        for p in pages:
+            p.write_bytes(b"PNG")
+        return pages
+
+    extract_calls: list[tuple[int, Path]] = []
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        extract_calls.append((page, txt_path))
+        txt_path.write_text(f"Text from page {page}.", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    book_dir = cli.cmd_extract(
+        input_pdf=input_pdf,
+        dpi=300,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert book_dir == tmp_path / "doc"
+    assert book_dir.is_dir()
+    assert (book_dir / "doc.original.pdf").exists()
+
+    artifacts_dir = book_dir / "artifacts"
+    assert artifacts_dir.is_dir()
+
+    # PNGs should be renamed to zero-padded names
+    assert (artifacts_dir / "page-1.png").exists()
+    assert (artifacts_dir / "page-2.png").exists()
+
+    # Text files should exist
+    assert (artifacts_dir / "page-1.txt").exists()
+    assert (artifacts_dir / "page-2.txt").exists()
+    assert (artifacts_dir / "page-1.txt").read_text(encoding="utf-8") == "Text from page 1."
+
+    # Should have called text extraction for both pages
+    assert [c[0] for c in extract_calls] == [1, 2]
+
+
+def test_cmd_extract_rerun(monkeypatch, tmp_path):
+    """Re-running extract when the PDF has already been moved should work."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        pages = [out_dir / "page-1.png"]
+        for p in pages:
+            p.write_bytes(b"PNG")
+        return pages
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        txt_path.write_text("text", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    # First run
+    cli.cmd_extract(input_pdf=input_pdf, show_progress=False, jobs=1)
+    assert not input_pdf.exists()  # moved to book_dir
+
+    # Second run (PDF already moved)
+    book_dir = cli.cmd_extract(input_pdf=input_pdf, show_progress=False, jobs=1)
+    assert book_dir == tmp_path / "doc"
+
+
+def test_main_extract_subcommand(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_extract(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/out")
+
+    monkeypatch.setattr(cli, "cmd_extract", fake_cmd_extract)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria",
+            "extract",
+            "input.pdf",
+            "--dpi",
+            "300",
+            "--jobs",
+            "2",
+            "--rasterizer",
+            "pdftoppm",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["input_pdf"] == "input.pdf"
+    assert captured["dpi"] == 300
+    assert captured["jobs"] == 2
+    assert captured["rasterizer"] == "pdftoppm"
+    assert captured["show_progress"] is True
+
+
+def test_main_extract_defaults(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_extract(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/out")
+
+    monkeypatch.setattr(cli, "cmd_extract", fake_cmd_extract)
+    monkeypatch.setattr(sys, "argv", ["betteria", "extract", "book.pdf"])
+
+    cli.main()
+
+    assert captured["input_pdf"] == "book.pdf"
+    assert captured["dpi"] == 300
+    assert captured["jobs"] == 0
+    assert captured["rasterizer"] == "pdftocairo"
+    assert captured["show_progress"] is True
+
+
 def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
     book_dir = tmp_path / "book"
     artifacts_dir = book_dir / "artifacts"
