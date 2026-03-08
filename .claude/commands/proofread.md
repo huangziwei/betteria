@@ -26,13 +26,13 @@ You will work through three phases. Be methodical and thorough.
    - How image file numbers map to book page numbers (e.g. image `page-06` = book pages 8+9)
    - Whether the left page is even or odd
 
-Write a brief summary of your findings before proceeding.
+Write a brief summary of your findings in the `$ARGUMENTS/structure.md` before proceeding.
 
 ---
 
 ## Phase 2: Page-by-page proofreading
 
-Process every content page (skipping front/back matter identified in Phase 1).
+Process every content page (skipping front/back matter identified in Phase 1). After the proofreading process is interrupted, always refer to the `$ARGUMENTS/structure.md` for findings of Phase 1.
 
 ### Resumability
 
@@ -41,7 +41,7 @@ Process every content page (skipping front/back matter identified in Phase 1).
 
 ### Processing each page
 
-Process **one page at a time**, sequentially. Do NOT use batch processing or subagents — work through each page yourself in order. For each page:
+Process **one page at a time**, sequentially. Do NOT use batch processing or subagents — work through each page yourself in order. Never process pages in parallel. For each page:
 
 1. Read the PNG via vision and the OCR `.txt` file side by side.
 2. Produce corrected text:
