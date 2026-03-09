@@ -11,6 +11,7 @@ You will work through three phases. Be methodical and thorough.
    - The first 10 pages
    - 3-5 pages from the middle
    - The last 5 pages
+   - BUT NEVER load more than one PNG at a time
 3. From this sample, determine:
    - **Page layout**: single-page or double-page spread
      - Check the image aspect ratio: if width > height, it is a double-page spread
