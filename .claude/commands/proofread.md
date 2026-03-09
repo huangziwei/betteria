@@ -39,6 +39,7 @@ Process every content page (skipping front/back matter identified in Phase 1). A
 
 - **Single-page layout**: Before processing a page, check if `$ARGUMENTS/artifacts/page-NNN.proofread.txt` already exists. If it does, **skip that page**.
 - **Double-page spread**: Before processing a page, check if **both** `$ARGUMENTS/artifacts/page-NN-L.proofread.txt` and `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` already exist. If both exist, **skip that image**. This makes the command resumable.
+- But always resume from the last proofread page and make sure it was done before moving on to the next un-proofread page.
 
 ### Processing each page
 
