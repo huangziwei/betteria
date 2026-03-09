@@ -52,6 +52,7 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - **Strip figures and diagrams**: remove any inline figures, illustrations, diagrams, and their text labels/captions entirely. Do NOT insert any placeholder or description such as `[FIGURE: ...]`, `[Figure: ...]`, `[IMAGE: ...]`, or similar annotations — just omit the figure completely and silently. The surrounding prose that *references* the figure should be kept.
    - **Strip footnote anchors**: remove superscript footnote markers (e.g. `¹`, `²`, `³`, `[1]`, `*`) from the body text. Since footnotes/endnotes are excluded from the final output, dangling anchors serve no purpose and won't render correctly in markdown or epub.
    - **Preserve paragraph structure** — maintain paragraph breaks as they appear in the original.
+   - **Join lines within paragraphs**: OCR text has hard line breaks at page-width boundaries. Join these into single continuous lines per paragraph. Only paragraph breaks (double newlines) should separate paragraphs. Do NOT keep mid-paragraph line breaks from the OCR — they produce incorrect rendering in markdown and epub.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 
 3. **Markdown formatting** (apply to both single-page and double-page layouts):
