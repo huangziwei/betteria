@@ -133,7 +133,7 @@ The `<!--PB:NNN-->` markers indicate ambiguous page boundaries (page ends with a
 2. For each PB at page N, check the PNG of page **N+1** to see if the first body text line (below the running header) is:
    - **Indented** → new paragraph (keep the break, remove marker)
    - **Flush left** → continuation (join with space, remove marker)
-3. Use **parallel subagents** (4-5 agents, ~10 pages each) to check all PNGs at once. Each agent reads the PNGs and reports `PB:N → INDENTED` or `PB:N → FLUSH`.
+3. Check each PB page **yourself, one at a time, sequentially**. For each PB at page N, read the PNG of page N and examine whether the first body text line (below the running header) is indented or flush left. Record the result as `PB:N → INDENTED` or `PB:N → FLUSH`. Do NOT use parallel subagents — thoroughness matters more than speed.
 4. Write a second Python script (`$ARGUMENTS/resolve_pb.py`) that applies the results: replace `\n\n<!--PB:N-->\n\n` with a space (for FLUSH) or `\n\n` (for INDENTED).
 
 ### Step 3: Verify
@@ -187,4 +187,5 @@ Where `pages` is `[first_page, last_page]` inclusive.
 - Preserve the author's formatting choices (italics indicated by emphasis, paragraph breaks, section breaks within chapters).
 - If you encounter an ambiguous word, use the context of the sentence and the visual appearance to determine the correct reading.
 - Work systematically through all pages — do not skip content pages.
-- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. The stitching script handles unambiguous cases (mid-sentence, hyphenation) automatically. For ambiguous boundaries (sentence ends at page break), the script inserts `<!--PB:N-->` markers. These are resolved in bulk by checking indentation in the next page's PNG — use parallel subagents for efficiency.
+- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. The stitching script handles unambiguous cases (mid-sentence, hyphenation) automatically. For ambiguous boundaries (sentence ends at page break), the script inserts `<!--PB:N-->` markers. These are resolved by checking indentation in the next page's PNG — check each one yourself, sequentially, for maximum accuracy.
+- **Prefer thoroughness over speed.** When choosing between a faster approach (parallel subagents, batch processing) and a slower but more careful approach (sequential, one-at-a-time checking), always choose the slower, more thorough way.
