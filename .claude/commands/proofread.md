@@ -88,8 +88,8 @@ Do NOT summarize or paraphrase — reproduce the author's exact text with only O
 **CRITICAL: Content filtering workaround.** Book content (especially passages involving violence, war, religion, or other sensitive topics) will trigger Anthropic's content filtering policy, causing a 400 error. To avoid this:
 
 1. Do NOT reproduce any of the book's content in your conversational text output.
-2. **Preferred method**: Copy the OCR `.txt` file to the `.proofread.txt` path using `cp` via Bash, then use the `Edit` tool to make targeted corrections (strip headers, fix OCR errors, join hyphenated words, add markdown formatting). This avoids ever putting the full page text in a tool parameter.
-3. **Fallback method**: If the page is short or simple, use the `Write` tool with the corrected text ONLY inside the `content` parameter and no text output in between.
+2. **The Only Preferred method**: Copy the OCR `.txt` file to the `.proofread.txt` path using `cp` via Bash, then use the `Edit` tool to make targeted corrections (strip headers, fix OCR errors, join hyphenated words, add markdown formatting). This avoids ever putting the full page text in a tool parameter.
+3. **Never fallback** to use the `Write` tool with the corrected text.
 4. Never discuss or quote the book's content in your conversational responses.
 
 ---
