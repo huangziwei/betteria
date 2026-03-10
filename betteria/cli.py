@@ -1026,7 +1026,7 @@ def cmd_merge(
             chapters_meta = meta.get("chapters", [])
 
             if chapters_meta:
-                for ch in chapters_meta:
+                for i, ch in enumerate(chapters_meta, 1):
                     filepath = chapters_dir / ch["file"]
                     if not filepath.exists():
                         continue
@@ -1045,7 +1045,7 @@ def cmd_merge(
                         content = _text_to_html(text)
                     epub_ch = epub.EpubHtml(
                         title=ch_title,
-                        file_name=f"ch_{ch.get('number', 0):03d}.xhtml",
+                        file_name=f"ch_{i:03d}.xhtml",
                         lang="en",
                     )
                     epub_ch.content = content
