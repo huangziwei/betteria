@@ -16,6 +16,7 @@ You will work through three phases. Be methodical and thorough.
    - **Page layout**: single-page or double-page spread
      - Check the image aspect ratio: if width > height, it is a double-page spread
      - If double-page spread, check whether page numbers appear in pairs (left + right)
+     - for single-page layout, if height is > 2000px, resize all pngs with `sips --resampleHeight 1999 page-*.png 2>&1`
    - **Front matter to skip**: title pages, copyright, dedication, blank pages, table of contents — note exact page numbers
    - **Back matter to skip**: footnotes/endnotes, references/bibliography, index, appendices, author bio, praise quotes, ads, blank pages — note exact page numbers
    - **Content page range**: the first and last pages of actual book content
