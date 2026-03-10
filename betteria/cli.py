@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import contextlib
+import html as html_mod
 import json
 import os
 import re
@@ -892,6 +893,7 @@ h5 + p,
 h6 + p,
 hr + p,
 header + p,
+hgroup + p,
 p:first-child{
 	text-indent: 0;
 }
@@ -925,6 +927,12 @@ abbr{
 	white-space: nowrap;
 }
 
+b,
+strong{
+	font-variant: small-caps;
+	font-weight: normal;
+}
+
 cite{
 	font-style: normal;
 }
@@ -938,6 +946,43 @@ i > em{
 p:has(br){
 	text-indent: 0;
 }
+
+/* Title page */
+section[epub|type~="titlepage"]{
+	break-after: always;
+	text-align: center;
+}
+
+section[epub|type~="titlepage"] h1{
+	font-size: 2em;
+	margin-top: 5em;
+}
+
+section[epub|type~="titlepage"] p{
+	margin: .5em 0;
+	text-indent: 0;
+}
+
+section[epub|type~="titlepage"] p.author{
+	font-variant: small-caps;
+	margin-top: 2em;
+}
+
+/* Colophon */
+section[epub|type~="colophon"]{
+	break-before: always;
+	margin-top: 5em;
+	text-align: center;
+}
+
+section[epub|type~="colophon"] header{
+	margin-bottom: 2em;
+}
+
+section[epub|type~="colophon"] p{
+	margin: .5em 0;
+	text-indent: 0;
+}
 """
 
 
@@ -946,6 +991,50 @@ def _text_to_html(text: str) -> str:
     import mistune
 
     return mistune.html(text)
+
+
+# ── EPUB structure helpers (following Standard Ebooks conventions) ────
+
+_FRONTMATTER_TITLES = frozenset({
+    "foreword", "preface", "introduction", "prologue",
+    "author's note", "editor's note",
+})
+
+_BACKMATTER_TITLES = frozenset({
+    "epilogue", "afterword", "acknowledgments", "acknowledgements",
+    "appendix", "bibliography", "glossary", "index",
+    "about the author", "notes",
+})
+
+_EPUB_TYPE_MAP = {
+    "foreword": "foreword",
+    "preface": "preface",
+    "introduction": "introduction",
+    "prologue": "prologue",
+    "epilogue": "epilogue",
+    "afterword": "afterword",
+    "acknowledgments": "acknowledgments",
+    "acknowledgements": "acknowledgments",
+    "appendix": "appendix",
+}
+
+
+def _infer_section_type(ch_meta: dict) -> str:
+    """Return 'frontmatter', 'bodymatter', or 'backmatter'."""
+    if ch_meta.get("number") is not None:
+        return "bodymatter"
+    title_lower = (ch_meta.get("title") or "").lower().strip()
+    if title_lower in _FRONTMATTER_TITLES:
+        return "frontmatter"
+    if title_lower in _BACKMATTER_TITLES:
+        return "backmatter"
+    return "bodymatter"
+
+
+def _infer_epub_type(ch_meta: dict) -> str:
+    """Return epub:type value for a chapter section."""
+    title_lower = (ch_meta.get("title") or "").lower().strip()
+    return _EPUB_TYPE_MAP.get(title_lower, "chapter")
 
 
 def cmd_merge(
@@ -996,13 +1085,56 @@ def cmd_merge(
 
             book_title = title or meta.get("title", "") or stem
             book_author = author or meta.get("author", "") or ""
+            book_lang = meta.get("language", "en")
+
+            # Extract source PDF metadata if available
+            source_pdf = book_dir / f"{stem}.original.pdf"
+            source_meta: dict[str, str] = {}
+            if source_pdf.exists():
+                try:
+                    result = subprocess.run(
+                        ["pdfinfo", str(source_pdf)],
+                        capture_output=True, text=True, check=True,
+                    )
+                    for line in result.stdout.splitlines():
+                        if ":" in line:
+                            key, _, val = line.partition(":")
+                            source_meta[key.strip()] = val.strip()
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    pass
 
             book = epub.EpubBook()
             book.set_identifier(f"betteria-{stem}")
             book.set_title(book_title)
-            book.set_language("en")
+            book.set_language(book_lang)
             if book_author:
                 book.add_author(book_author)
+
+            # Optional metadata from metadata.json
+            for field in ("description", "date"):
+                val = meta.get(field, "")
+                if val:
+                    book.add_metadata("DC", field, val)
+            if meta.get("publisher"):
+                book.add_metadata("DC", "publisher", meta["publisher"])
+            if meta.get("isbn"):
+                book.add_metadata(
+                    "DC", "identifier", meta["isbn"],
+                    {"id": "isbn", "opf:scheme": "ISBN"},
+                )
+            # Subjects: prefer metadata.json, fall back to PDF keywords
+            subjects = meta.get("subjects", [])
+            if not subjects and source_meta.get("Keywords"):
+                subjects = [
+                    kw.strip() for kw in source_meta["Keywords"].split(",")
+                    if kw.strip()
+                ]
+            for subj in subjects:
+                book.add_metadata("DC", "subject", subj)
+            # dc:source — record the source PDF
+            if source_meta:
+                source_desc = source_meta.get("Title", book_title)
+                book.add_metadata("DC", "source", source_desc)
 
             # Cover image
             cover_path = None
@@ -1022,8 +1154,67 @@ def cmd_merge(
             )
             book.add_item(style)
 
-            epub_chapters = []
+            # ── Title page ──
+            esc = html_mod.escape
+            titlepage = epub.EpubHtml(
+                title="Title Page",
+                file_name="titlepage.xhtml",
+                lang=book_lang,
+            )
+            tp_lines = [
+                '<section id="titlepage" epub:type="titlepage">',
+                f"\t<h1>{esc(book_title)}</h1>",
+            ]
+            if book_author:
+                tp_lines.append(f'\t<p class="author">{esc(book_author)}</p>')
+            tp_lines.append("</section>")
+            titlepage.content = "\n".join(tp_lines)
+            titlepage.add_item(style)
+            book.add_item(titlepage)
+
+            # ── Process chapters ──
+            epub_chapters = []  # list of (EpubHtml, section_type)
             chapters_meta = meta.get("chapters", [])
+
+            def _process_chapter(text, ch_meta, i):
+                """Return (EpubHtml, section_type) for one chapter."""
+                heading_match = re.match(r"\s*#{1,6}\s+(.*)", text)
+                if heading_match:
+                    ch_title = heading_match.group(1).strip()
+                else:
+                    ch_title = ch_meta.get(
+                        "title", f"Chapter {i}"
+                    ) if ch_meta else f"Chapter {i}"
+
+                # Convert full markdown (including heading) → HTML
+                body_html = _text_to_html(text)
+
+                # Infer structure
+                section_type = _infer_section_type(ch_meta) if ch_meta else "bodymatter"
+                epub_type = _infer_epub_type(ch_meta) if ch_meta else "chapter"
+                if ch_meta:
+                    section_id = re.sub(
+                        r"[^\w-]", "",
+                        ch_meta["file"].rsplit(".", 1)[0],
+                    )
+                else:
+                    section_id = f"chapter-{i}"
+
+                content = (
+                    f'<section id="{section_id}" epub:type="{epub_type}">\n'
+                    f"{body_html}\n"
+                    f"</section>"
+                )
+
+                epub_ch = epub.EpubHtml(
+                    title=ch_title,
+                    file_name=f"ch_{i:03d}.xhtml",
+                    lang=book_lang,
+                )
+                epub_ch.content = content
+                epub_ch.add_item(style)
+                book.add_item(epub_ch)
+                return epub_ch, section_type
 
             if chapters_meta:
                 for i, ch in enumerate(chapters_meta, 1):
@@ -1031,54 +1222,65 @@ def cmd_merge(
                     if not filepath.exists():
                         continue
                     text = filepath.read_text(encoding="utf-8")
-                    heading_match = re.match(r"\s*#{1,6}\s+(.*)", text)
-                    if heading_match:
-                        ch_title = heading_match.group(1).strip()
-                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
-                        html = _text_to_html(body)
-                        content = f"<h1>{ch_title}</h1>\n{html}"
-                    else:
-                        # No heading: pseudo-title for TOC only
-                        plain = re.sub(r"[#*>\[\]`]", "", text).strip()
-                        words = plain.split()[:6]
-                        ch_title = " ".join(words).rstrip(".,;:!?") + "…"
-                        content = _text_to_html(text)
-                    epub_ch = epub.EpubHtml(
-                        title=ch_title,
-                        file_name=f"ch_{i:03d}.xhtml",
-                        lang="en",
-                    )
-                    epub_ch.content = content
-                    epub_ch.add_item(style)
-                    book.add_item(epub_ch)
-                    epub_chapters.append(epub_ch)
+                    epub_chapters.append(_process_chapter(text, ch, i))
             else:
                 for i, ch_file in enumerate(chapter_files, 1):
                     text = ch_file.read_text(encoding="utf-8")
-                    heading_match = re.match(r"\s*#{1,6}\s+(.*)", text)
-                    if heading_match:
-                        ch_title = heading_match.group(1).strip()
-                        body = re.sub(r"\A\s*#{1,6}\s+[^\n]*\n*", "", text)
-                        content = f"<h1>{ch_title}</h1>\n{_text_to_html(body)}"
-                    else:
-                        plain = re.sub(r"[#*>\[\]`]", "", text).strip()
-                        words = plain.split()[:6]
-                        ch_title = " ".join(words).rstrip(".,;:!?") + "…"
-                        content = _text_to_html(text)
-                    epub_ch = epub.EpubHtml(
-                        title=ch_title,
-                        file_name=f"ch_{i:03d}.xhtml",
-                        lang="en",
-                    )
-                    epub_ch.content = content
-                    epub_ch.add_item(style)
-                    book.add_item(epub_ch)
-                    epub_chapters.append(epub_ch)
+                    epub_chapters.append(_process_chapter(text, None, i))
 
-            book.toc = epub_chapters
+            # ── Colophon ──
+            colophon = epub.EpubHtml(
+                title="Colophon",
+                file_name="colophon.xhtml",
+                lang=book_lang,
+            )
+            col_lines = [
+                '<section id="colophon" epub:type="colophon">',
+                "\t<header>",
+                '\t\t<h2 epub:type="title">Colophon</h2>',
+                "\t</header>",
+                f"\t<p><i>{esc(book_title)}</i></p>",
+            ]
+            if book_author:
+                col_lines.append(f"\t<p>by {esc(book_author)}</p>")
+            # Publication info
+            pub_parts: list[str] = []
+            if meta.get("publisher"):
+                pub_parts.append(esc(meta["publisher"]))
+            if meta.get("date"):
+                pub_parts.append(esc(meta["date"]))
+            if pub_parts:
+                col_lines.append(f"\t<p>{', '.join(pub_parts)}.</p>")
+            if meta.get("isbn"):
+                col_lines.append(
+                    f'\t<p><abbr>ISBN</abbr>: {esc(meta["isbn"])}</p>'
+                )
+            # Source PDF info
+            if source_meta and source_meta.get("Title"):
+                col_lines.append(
+                    f"\t<p>Produced from the digital edition of"
+                    f" <i>{esc(source_meta['Title'])}</i>.</p>"
+                )
+            # Betteria credit
+            col_lines.append(
+                "\t<p>The text content of this ebook was extracted"
+                " and produced using <b>betteria</b>.</p>"
+            )
+            col_lines.append(
+                "\t<p>Illustrations, photographs, and other non-text"
+                " elements from the original edition are not included.</p>"
+            )
+            col_lines.append("</section>")
+            colophon.content = "\n".join(col_lines)
+            colophon.add_item(style)
+            book.add_item(colophon)
+
+            # ── TOC, spine, and navigation ──
+            toc_chapters = [ec for ec, _ in epub_chapters]
+            book.toc = [titlepage] + toc_chapters + [colophon]
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
-            book.spine = ["nav"] + epub_chapters
+            book.spine = ["nav", titlepage] + toc_chapters + [colophon]
 
             epub.write_epub(str(epub_path), book)
             epub_out = epub_path

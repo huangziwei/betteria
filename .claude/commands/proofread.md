@@ -18,6 +18,7 @@ You will work through three phases. Be methodical and thorough.
      - If double-page spread, check whether page numbers appear in pairs (left + right)
      - for single-page layout, if height is > 2000px, resize all pngs with `sips --resampleHeight 1999 page-*.png 2>&1`
    - **Front matter to skip**: title pages, copyright, dedication, blank pages, table of contents — note exact page numbers
+   - **Publication info** (from the copyright/title page): extract the **publisher**, **publication year**, and **ISBN** if visible — these go into `metadata.json`
    - **Back matter to skip**: footnotes/endnotes, references/bibliography, index, appendices, author bio, praise quotes, ads, blank pages — note exact page numbers
    - **Content page range**: the first and last pages of actual book content
    - **Section/chapter structure**: identify all chapter or section boundaries and their titles (they may be named sections like "INTRODUCTION", "PARTIES" rather than "Chapter 1", "Chapter 2")
@@ -168,6 +169,9 @@ Write `$ARGUMENTS/metadata.json` with this exact schema:
 {
   "title": "<Book Title>",
   "author": "<Author Name>",
+  "publisher": "<Publisher Name>",
+  "date": "<Publication Year>",
+  "isbn": "<ISBN>",
   "chapters": [
     {
       "number": 1,
@@ -179,7 +183,7 @@ Write `$ARGUMENTS/metadata.json` with this exact schema:
 }
 ```
 
-Where `pages` is `[first_page, last_page]` inclusive.
+Where `pages` is `[first_page, last_page]` inclusive. The `publisher`, `date`, and `isbn` fields should be extracted from the book's copyright page during Phase 1 survey. These are included in the final EPUB metadata and colophon. Omit any field that is not available.
 
 ---
 
