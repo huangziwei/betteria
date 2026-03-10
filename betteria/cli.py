@@ -1255,12 +1255,6 @@ def cmd_merge(
                 col_lines.append(
                     f'\t<p><abbr>ISBN</abbr>: {esc(meta["isbn"])}</p>'
                 )
-            # Source PDF info
-            if source_meta and source_meta.get("Title"):
-                col_lines.append(
-                    f"\t<p>Produced from the digital edition of"
-                    f" <i>{esc(source_meta['Title'])}</i>.</p>"
-                )
             # Betteria credit
             col_lines.append(
                 "\t<p>The text content of this ebook was extracted"
