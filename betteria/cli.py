@@ -1218,9 +1218,15 @@ def cmd_merge(
                 if heading_match:
                     ch_title = heading_match.group(1).strip()
                 else:
-                    ch_title = ch_meta.get(
-                        "title", f"Chapter {i}"
-                    ) if ch_meta else f"Chapter {i}"
+                    ch_title = (
+                        ch_meta.get("title") or ""
+                    ) if ch_meta else ""
+
+                if not ch_title:
+                    # Use first few words of body text as TOC title
+                    plain = re.sub(r"[#*>\[\]`]", "", text).strip()
+                    words = plain.split()[:6]
+                    ch_title = " ".join(words).rstrip(".,;:!?") + "\u2026" if words else f"Chapter {i}"
 
                 # Convert full markdown (including heading) → HTML
                 body_html = _text_to_html(text)

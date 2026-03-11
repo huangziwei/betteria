@@ -589,6 +589,64 @@ def test_cmd_merge_creates_epub_from_chapters(monkeypatch, tmp_path):
     assert pdf_out is None
 
 
+def test_cmd_merge_untitled_chapter_uses_first_words_in_toc(tmp_path):
+    """Chapters with no heading and no metadata title use first words in TOC."""
+    book_dir = tmp_path / "book"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True)
+
+    (chapters_dir / "01-untitled.txt").write_text(
+        "The quick brown fox jumps over the lazy dog.", encoding="utf-8"
+    )
+    (chapters_dir / "02-titled.txt").write_text(
+        "## Real Title\n\nBody text here.", encoding="utf-8"
+    )
+
+    metadata_obj = {
+        "title": "Test Book",
+        "author": "Test Author",
+        "chapters": [
+            {"number": 1, "title": "", "pages": [1, 5], "file": "01-untitled.txt"},
+            {"number": 2, "title": "Real Title", "pages": [6, 10], "file": "02-titled.txt"},
+        ],
+    }
+    (book_dir / "metadata.json").write_text(
+        json.dumps(metadata_obj), encoding="utf-8"
+    )
+
+    epub_out, _ = cli.cmd_merge(
+        input_dir=book_dir,
+        epub_only=True,
+        show_progress=False,
+    )
+
+    import zipfile, re
+
+    with zipfile.ZipFile(epub_out) as z:
+        toc_titles = []
+        for name in z.namelist():
+            if "nav" in name.lower() and name.endswith(".xhtml"):
+                content = z.read(name).decode("utf-8")
+                toc_titles = re.findall(r"<a[^>]*>(.*?)</a>", content)
+                break
+
+    # Untitled chapter should use first words with ellipsis
+    assert any("The quick brown fox jumps over" in t for t in toc_titles)
+    assert any(t.endswith("\u2026") for t in toc_titles if "quick" in t)
+    # Titled chapter should use its actual title
+    assert "Real Title" in toc_titles
+    # Body text of untitled chapter should NOT have the ellipsis
+    with zipfile.ZipFile(epub_out) as z:
+        for name in z.namelist():
+            if "ch_001" in name:
+                body = z.read(name).decode("utf-8")
+                # The ellipsis appears in <title> (mirrors TOC), but not in <body>
+                body_content = body.split("<body>", 1)[1]
+                assert "\u2026" not in body_content
+                assert "The quick brown fox" in body_content
+                break
+
+
 def test_cmd_merge_skips_epub_without_chapters(monkeypatch, tmp_path):
     book_dir = tmp_path / "book"
     artifacts_dir = book_dir / "artifacts"
