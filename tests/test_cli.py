@@ -161,6 +161,7 @@ def test_cmd_enhance_coordinates_pipeline(monkeypatch, tmp_path):
         out_path.write_bytes(b"PNG-enhanced")
         whiten_calls.append((Path(png_path), out_path, kwargs))
 
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -218,6 +219,7 @@ def test_cmd_enhance_output_dir_name(monkeypatch, tmp_path):
     def fake_whiten(png_path, out_path, **_):
         Path(out_path).write_bytes(b"PNG-enhanced")
 
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -231,6 +233,81 @@ def test_cmd_enhance_output_dir_name(monkeypatch, tmp_path):
     assert book_dir == expected_dir
     assert (book_dir / "artifacts").is_dir()
     assert (book_dir / "letter.original.pdf").exists()
+
+
+def test_cmd_enhance_skips_existing_pages(monkeypatch, tmp_path):
+    """Pages with existing enhanced PNGs in artifacts/ are skipped."""
+    book_dir = tmp_path / "doc"
+    book_dir.mkdir()
+    original_pdf = book_dir / "doc.original.pdf"
+    original_pdf.write_bytes(b"%PDF")
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir()
+
+    # Pre-create page 1 so it should be skipped
+    (artifacts / "page-1.png").write_bytes(b"PNG-existing")
+
+    whiten_calls: list[tuple[Path, Path]] = []
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        pages = [out_dir / "page_1.png", out_dir / "page_2.png"]
+        for page in pages:
+            page.write_bytes(b"PNG")
+        return pages
+
+    def fake_whiten(png_path, out_path, **kwargs):
+        Path(out_path).write_bytes(b"PNG-enhanced")
+        whiten_calls.append((Path(png_path), Path(out_path)))
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
+
+    # Pass directory to resume
+    result = cli.cmd_enhance(
+        input_pdf=book_dir,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert result == book_dir
+    # Only page 2 should have been enhanced (page 1 was skipped)
+    assert len(whiten_calls) == 1
+    assert whiten_calls[0][1] == artifacts / "page-2.png"
+    # Page 1 should still have its original content
+    assert (artifacts / "page-1.png").read_bytes() == b"PNG-existing"
+
+
+def test_cmd_enhance_skips_all_when_complete(monkeypatch, tmp_path):
+    """When all pages exist, no rasterization or enhancement happens."""
+    book_dir = tmp_path / "doc"
+    book_dir.mkdir()
+    original_pdf = book_dir / "doc.original.pdf"
+    original_pdf.write_bytes(b"%PDF")
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "page-1.png").write_bytes(b"PNG")
+    (artifacts / "page-2.png").write_bytes(b"PNG")
+
+    pdf_to_images_called = False
+
+    def fake_pdf_to_images(*args, **kwargs):
+        nonlocal pdf_to_images_called
+        pdf_to_images_called = True
+        return []
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+
+    result = cli.cmd_enhance(
+        input_pdf=book_dir,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert result == book_dir
+    # pdf_to_images should NOT have been called since all pages exist
+    assert not pdf_to_images_called
 
 
 def test_cmd_extract_produces_pngs_and_txt(monkeypatch, tmp_path):

@@ -423,8 +423,11 @@ def cmd_enhance(
     jobs: int = 0,
     rasterizer: Rasterizer = "pdftocairo",
 ) -> Path:
-    """
-    Rasterize a PDF and save enhanced (whitened) PNGs to ``<stem>-artifacts/``.
+    """Rasterize a PDF and save enhanced (whitened) PNGs to ``<stem>/artifacts/``.
+
+    Accepts either a PDF file or an existing book directory.  Pages that
+    already have an enhanced PNG in ``artifacts/`` are skipped, so the
+    command is safe to re-run after interruption.
     """
     if dpi <= 0:
         raise ValueError("DPI must be a positive integer")
@@ -436,26 +439,60 @@ def cmd_enhance(
         )
 
     input_path = Path(input_pdf)
+    console = Console(stderr=True)
 
-    # Derive book directory and original-copy path from the input
-    book_dir = input_path.parent / input_path.stem
-    original_copy = book_dir / f"{input_path.stem}.original.pdf"
+    if input_path.is_dir():
+        # Directory input: resume from an existing book directory
+        book_dir = input_path
+        originals = list(book_dir.glob("*.original.pdf"))
+        if not originals:
+            raise FileNotFoundError(
+                f"No .original.pdf found in {book_dir}. "
+                "Pass a PDF file for first-time enhancement."
+            )
+        if len(originals) > 1:
+            raise ValueError(
+                f"Multiple .original.pdf files in {book_dir}: {originals}"
+            )
+        original_copy = originals[0]
+    else:
+        # PDF file input
+        book_dir = input_path.parent / input_path.stem
+        original_copy = book_dir / f"{input_path.stem}.original.pdf"
 
-    if not input_path.exists():
-        # On re-run the PDF has already been moved into the book dir
-        if original_copy.exists():
-            input_path = original_copy
-        else:
-            raise FileNotFoundError(f"Input PDF not found: {input_path}")
+        if not input_path.exists():
+            # On re-run the PDF has already been moved into the book dir
+            if original_copy.exists():
+                input_path = original_copy
+            else:
+                raise FileNotFoundError(f"Input PDF not found: {input_path}")
 
-    book_dir.mkdir(parents=True, exist_ok=True)
+        book_dir.mkdir(parents=True, exist_ok=True)
 
-    if not original_copy.exists():
-        shutil.move(str(input_path), original_copy)
-        input_path = original_copy
+        if not original_copy.exists():
+            shutil.move(str(input_path), original_copy)
 
     out_dir = book_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine total page count and which pages still need enhancement
+    total_pages = get_page_count(original_copy)
+    width = len(str(total_pages))
+    enhanced_paths = [
+        out_dir / f"page-{i + 1:0{width}d}.png"
+        for i in range(total_pages)
+    ]
+    pages_todo = [i for i, ep in enumerate(enhanced_paths) if not ep.exists()]
+
+    if not pages_todo:
+        console.print("[dim]All pages already enhanced.[/dim]")
+        return book_dir
+
+    skipped = total_pages - len(pages_todo)
+    if skipped and show_progress:
+        console.print(
+            f"[dim]Skipping {skipped} pages with existing enhanced PNGs.[/dim]"
+        )
 
     with tempfile.TemporaryDirectory(prefix="betteria-pages-") as pages_dir_name:
         pages_dir = Path(pages_dir_name)
@@ -472,20 +509,20 @@ def cmd_enhance(
         if not png_paths:
             raise RuntimeError("No PNG pages generated from input PDF")
 
-        width = len(str(len(png_paths)))
-        enhanced_paths = [
-            out_dir / f"page-{i + 1:0{width}d}.png"
-            for i in range(len(png_paths))
+        # Pair rasterized pages with their enhanced output paths, keep only TODO
+        todo: list[tuple[Path, Path]] = [
+            (png_paths[i], enhanced_paths[i]) for i in pages_todo
         ]
 
         worker_target = jobs if jobs > 0 else _available_cpu_count()
-        worker_target = min(worker_target, len(png_paths))
+        worker_target = min(worker_target, len(todo))
 
         if worker_target <= 1:
             with _progress(
-                len(png_paths), "Enhancing images", show_progress
+                total_pages, "Enhancing images", show_progress
             ) as (progress, task_id):
-                for png_path, enhanced_path in zip(png_paths, enhanced_paths):
+                progress.advance(task_id, skipped)
+                for png_path, enhanced_path in todo:
                     whiten_and_save(
                         png_path,
                         enhanced_path,
@@ -498,8 +535,9 @@ def cmd_enhance(
                     progress.advance(task_id, 1)
         else:
             with _progress(
-                len(png_paths), "Enhancing images", show_progress
+                total_pages, "Enhancing images", show_progress
             ) as (progress_bar, task_id):
+                progress_bar.advance(task_id, skipped)
                 with concurrent.futures.ProcessPoolExecutor(
                     max_workers=worker_target
                 ) as executor:
@@ -514,9 +552,7 @@ def cmd_enhance(
                             c_val,
                             invert,
                         )
-                        for png_path, enhanced_path in zip(
-                            png_paths, enhanced_paths
-                        )
+                        for png_path, enhanced_path in todo
                     ]
 
                     for future in concurrent.futures.as_completed(futures):
@@ -1322,7 +1358,9 @@ def main():
         "enhance",
         help="Rasterize and enhance a scanned PDF into clean PNGs.",
     )
-    p_enhance.add_argument("input", help="Path to input PDF")
+    p_enhance.add_argument(
+        "input", help="Path to input PDF or existing book directory (to resume)"
+    )
     p_enhance.add_argument(
         "--dpi",
         type=int,
