@@ -63,6 +63,10 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - **Japanese-specific**:
      - **Furigana (振り仮名)**: OCR may capture ruby reading annotations (small kana above/beside kanji). Strip these — they don't belong in the prose text. E.g. if OCR outputs `漢かん字じ`, correct to `漢字`.
      - **Emphasis dots (傍点)**: Japanese uses dots (・) placed beside characters for emphasis instead of italics. Check the PNG for these and mark the emphasized text with `*emphasis*` in markdown.
+     - **Paragraph spacing**: In Japanese proofread files, always use **double newlines** (a blank line) between paragraphs — exactly the same as in English. Every paragraph must be separated by a blank line. Single newlines between paragraphs will cause them to merge in markdown/epub rendering.
+     - **Scene breaks**: When the PNG shows extra vertical whitespace between paragraphs (a visual gap indicating a scene or time break, but NOT a numbered section), insert a `---` (horizontal rule) on its own line with blank lines above and below. These are distinct from numbered section headings (`### N`).
+     - **Dashes**: Japanese text uses double em-dashes `——` (two U+2014 characters) for dashes. OCR may produce single `ー` (katakana prolonged sound mark) or `─` (box drawing) or `──` (two box drawings) instead. Always normalize to `——`.
+     - **Quotation marks**: Japanese dialogue uses `「」` for speech and `『』` for nested quotes or titles. OCR frequently drops these — always check the PNG for quotation marks around dialogue lines.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 
 3. **Markdown formatting** (apply to both single-page and double-page layouts):
