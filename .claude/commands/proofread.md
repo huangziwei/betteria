@@ -179,6 +179,7 @@ Write `$ARGUMENTS/metadata.json` with this exact schema:
 {
   "title": "<Book Title>",
   "author": "<Author Name>",
+  "language": "<Language Code>",
   "publisher": "<Publisher Name>",
   "date": "<Publication Year>",
   "isbn": "<ISBN>",
@@ -193,7 +194,7 @@ Write `$ARGUMENTS/metadata.json` with this exact schema:
 }
 ```
 
-Where `pages` is `[first_page, last_page]` inclusive. The `publisher`, `date`, and `isbn` fields should be extracted from the book's copyright page during Phase 1 survey. These are included in the final EPUB metadata and colophon. Omit any field that is not available.
+Where `pages` is `[first_page, last_page]` inclusive. The `language` field is a BCP 47 language code (e.g. `"en"` for English, `"ja"` for Japanese) — this controls EPUB writing direction and CSS. The `publisher`, `date`, and `isbn` fields should be extracted from the book's copyright page during Phase 1 survey. These are included in the final EPUB metadata and colophon. Omit any field that is not available.
 
 ---
 

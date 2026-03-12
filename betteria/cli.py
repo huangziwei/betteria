@@ -1021,6 +1021,47 @@ section[epub|type~="colophon"] p{
 }
 """
 
+# Additional CSS appended for vertical CJK layouts (e.g. Japanese novels).
+# Based on conventions from commercial Japanese EPUB files.
+_EPUB_CSS_VERTICAL = """\
+
+html{
+	writing-mode: vertical-rl;
+	-webkit-writing-mode: vertical-rl;
+	-epub-writing-mode: vertical-rl;
+	line-break: normal;
+	-webkit-line-break: normal;
+}
+
+body{
+	font-family: serif;
+	hyphens: none;
+	-epub-hyphens: none;
+	font-variant-numeric: normal;
+	letter-spacing: 0;
+	word-spacing: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6{
+	font-variant: normal;
+}
+
+b,
+strong{
+	font-variant: normal;
+	font-weight: bold;
+}
+
+section[epub|type~="titlepage"] p.author{
+	font-variant: normal;
+}
+"""
+
 
 def _text_to_html(text: str) -> str:
     """Convert Markdown text to HTML."""
@@ -1182,11 +1223,21 @@ def cmd_merge(
             if cover_path:
                 book.set_cover(f"cover{cover_path.suffix}", cover_path.read_bytes())
 
+            # Vertical layout for CJK languages
+            is_vertical = book_lang == "ja"
+            css = _EPUB_CSS + _EPUB_CSS_VERTICAL if is_vertical else _EPUB_CSS
+            if is_vertical:
+                book.set_direction("rtl")
+                book.add_metadata(
+                    None, "meta", "",
+                    {"name": "primary-writing-mode", "content": "vertical-rl"},
+                )
+
             style = epub.EpubItem(
                 uid="style",
                 file_name="style/default.css",
                 media_type="text/css",
-                content=_EPUB_CSS.encode("utf-8"),
+                content=css.encode("utf-8"),
             )
             book.add_item(style)
 
