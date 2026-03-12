@@ -24,6 +24,7 @@ You will work through three phases. Be methodical and thorough.
    - **Section/chapter structure**: identify all chapter or section boundaries and their titles (they may be named sections like "INTRODUCTION", "PARTIES" rather than "Chapter 1", "Chapter 2")
    - **Running headers pattern**: e.g. alternating book title on even pages / section name on odd pages
    - **Page number format and location**: e.g. centered at bottom, top-right corner
+   - **Language**: determine if the book is in English, Japanese, or another language. Record this in `structure.md` — it affects line joining, punctuation rules, and page-boundary handling in later phases.
 
 4. If **double-page spread**, also note:
    - How image file numbers map to book page numbers (e.g. image `page-06` = book pages 8+9)
@@ -57,6 +58,11 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - **Strip footnote anchors**: remove superscript footnote markers (e.g. `¹`, `²`, `³`, `[1]`, `*`) from the body text. Since footnotes/endnotes are excluded from the final output, dangling anchors serve no purpose and won't render correctly in markdown or epub.
    - **Preserve paragraph structure** — maintain paragraph breaks as they appear in the original.
    - **Join lines within paragraphs**: OCR text has hard line breaks at page-width boundaries. Join these into single continuous lines per paragraph. Only paragraph breaks (double newlines) should separate paragraphs. Do NOT keep mid-paragraph line breaks from the OCR — they produce incorrect rendering in markdown and epub.
+     - **English**: join lines with a space between them.
+     - **Japanese**: join lines with NO space — Japanese text is continuous without word spaces. Simply concatenate the end of one line with the start of the next.
+   - **Japanese-specific**:
+     - **Furigana (振り仮名)**: OCR may capture ruby reading annotations (small kana above/beside kanji). Strip these — they don't belong in the prose text. E.g. if OCR outputs `漢かん字じ`, correct to `漢字`.
+     - **Emphasis dots (傍点)**: Japanese uses dots (・) placed beside characters for emphasis instead of italics. Check the PNG for these and mark the emphasized text with `*emphasis*` in markdown.
    - If a page is entirely a figure, table, illustration, or blank, write `[BLANK PAGE]` as its content.
 
 3. **Markdown formatting** (apply to both single-page and double-page layouts):
@@ -120,8 +126,12 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
 2. For each chapter, reads all `page-NNN.proofread.txt` files in range.
 3. At each page boundary, applies these rules automatically:
    - If the next page starts with a `#` heading → new section (paragraph break).
-   - If the current page ends with `word-` (hyphenation) → join the word, no break.
-   - If the current page ends **without** sentence-ending punctuation (`.?!"')]}`) → mid-sentence, join with space.
+   - **English only**: If the current page ends with `word-` (hyphenation) → join the word, no break. (Japanese does not use word hyphenation.)
+   - If the current page ends **without** sentence-ending punctuation → mid-sentence, join with no paragraph break.
+     - **English** sentence-ending punctuation: `.?!"')]}`
+     - **Japanese** sentence-ending punctuation: `。？！」）』〕】`
+     - **English**: join with a space.
+     - **Japanese**: join with no space.
    - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
 4. Merges `## Chapter N` + `## Title` into a single heading `## Chapter N: Title` (preserving chapter numbers from the original).
 5. Cleans up triple+ newlines.
@@ -135,10 +145,10 @@ The `<!--PB:NNN-->` markers indicate ambiguous page boundaries (page ends with a
 
 1. Extract all PB page numbers from the chapter files.
 2. For each PB at page N, check the PNG of page **N+1** to see if the first body text line (below the running header) is:
-   - **Indented** → new paragraph (keep the break, remove marker)
-   - **Flush left** → continuation (join with space, remove marker)
+   - **Indented** → new paragraph (keep the break, remove marker). Note: Japanese paragraphs indent with a full-width space `　` (U+3000), not ASCII spaces.
+   - **Flush left** → continuation (remove marker and join — with a space for English, with no space for Japanese).
 3. Check each PB page **yourself, one at a time, sequentially**. For each PB at page N, read the PNG of page N and examine whether the first body text line (below the running header) is indented or flush left. Record the result as `PB:N → INDENTED` or `PB:N → FLUSH`. Do NOT use parallel subagents — thoroughness matters more than speed.
-4. Write a second Python script (`$ARGUMENTS/resolve_pb.py`) that applies the results: replace `\n\n<!--PB:N-->\n\n` with a space (for FLUSH) or `\n\n` (for INDENTED).
+4. Write a second Python script (`$ARGUMENTS/resolve_pb.py`) that applies the results: replace `\n\n<!--PB:N-->\n\n` with the appropriate join (a space for English, empty string for Japanese) for FLUSH, or `\n\n` for INDENTED.
 
 ### Step 3: Verify
 
@@ -146,7 +156,7 @@ After resolving all markers, verify:
 - No `<!--PB:` markers remain
 - No `[FIGURE:` or `[IMAGE:` lines
 - No `[BLANK PAGE]` entries
-- No trailing word-hyphens (`\w-$` at line ends)
+- No trailing word-hyphens (`\w-$` at line ends) — English only
 - Every chapter file starts with `## `
 - Word counts look reasonable
 
