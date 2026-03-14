@@ -125,7 +125,7 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
    - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
 4. Merges `## Chapter N` + `## Title` into a single heading `## Chapter N: Title` (preserving chapter numbers from the original).
 5. Cleans up triple+ newlines.
-6. Adds markdown line breaks (two trailing spaces) to blockquote lines: for every consecutive run of `> ` lines, add `  ` (two spaces) before the newline on every line **except** the last line of the run. Without these trailing spaces, consecutive blockquote lines merge into a single line in epub rendering. (This cannot be done reliably during Phase 2 because the `Edit` and `Write` tools silently strip trailing whitespace.)
+6. Adds markdown line breaks (two trailing spaces) to blockquote lines: for every consecutive run of `> ` lines, add `  ` (two spaces) before the newline on every line **except** the last line of the run. Without these trailing spaces, consecutive blockquote lines merge into a single line in epub rendering. This is a safety net — trailing spaces should also be added during Phase 2 proofreading, but are easy to forget.
 7. Writes each chapter to `$ARGUMENTS/chapters/NN-slug.md`.
 8. Writes `$ARGUMENTS/metadata.json`.
 9. Reports how many `<!--PB:-->` markers remain per chapter.
