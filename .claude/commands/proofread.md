@@ -39,9 +39,9 @@ Process every content page (skipping front/back matter identified in Phase 1). A
 
 ### Resumability
 
-- **Single-page layout**: Before processing a page, check if `$ARGUMENTS/artifacts/page-NNN.proofread.txt` already exists. If it does, **skip that page**.
-- **Double-page spread**: Before processing a page, check if **both** `$ARGUMENTS/artifacts/page-NN-L.proofread.txt` and `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` already exist. If both exist, **skip that image**. This makes the command resumable.
-- But always resume from the last proofread page and make sure it was done before moving on to the next un-proofread page.
+- **Single-page layout**: Before processing a page, check if `$ARGUMENTS/artifacts/page-NNN.proofread.txt` already exists. If it does, **skip that page** — EXCEPT for the very last proofread page (the highest-numbered `.proofread.txt` file).
+- **Double-page spread**: Before processing a page, check if **both** `$ARGUMENTS/artifacts/page-NN-L.proofread.txt` and `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` already exist. If both exist, **skip that image** — EXCEPT for the very last proofread image. This makes the command resumable.
+- **Always re-verify the last proofread page**: Read both the PNG and the existing `.proofread.txt`, compare them, and fix any issues (missed OCR errors, unstripped headers, unjoined hyphens, missing markdown formatting). Only after confirming it is correct should you move on to the next un-proofread page. This guards against incomplete work from an interrupted session.
 
 ### Processing each page
 
