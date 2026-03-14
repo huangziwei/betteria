@@ -87,6 +87,14 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
      - `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` (right book page)
      - Each file contains only that half's text, with headers/page numbers stripped.
 
+5. **Page-boundary annotation**: After writing each proofread file, determine how this page should connect to the **next** page during stitching. Append one of these markers as the very last line of the proofread file:
+   - `<!--JOIN-->` — the next page continues the same paragraph (flush left in the next page's PNG). Use this when the current page ends mid-sentence, OR when it ends with sentence-ending punctuation but the next page's first body line (below the running header) starts flush left.
+   - `<!--PARA-->` — the next page starts a new paragraph (indented in the next page's PNG). Use this when the current page ends with sentence-ending punctuation and the next page's first body line is indented.
+   - No marker needed if the page ends with `word-` (hyphenation) — the hyphen itself tells the stitching script to join.
+   - No marker needed on the very last content page.
+
+   To determine JOIN vs PARA: when the current page ends with sentence-ending punctuation (`.?!"')]}—`), read the **next** page's PNG and check whether the first body text line (below the running header) is indented or flush left. You're already reading pages sequentially, so you can peek ahead. This eliminates the need for the separate PB-resolution step in Phase 3.
+
 Do NOT summarize or paraphrase — reproduce the author's exact text with only OCR corrections and header/footer removal.
 
 **CRITICAL: Content filtering workaround.** Book content (especially passages involving violence, war, religion, or other sensitive topics) will trigger Anthropic's content filtering policy, causing a 400 error. To avoid this:
@@ -122,7 +130,10 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
    - If the next page starts with a `#` heading → new section (paragraph break).
    - If the current page ends with `word-` (hyphenation) → join the word, no break.
    - If the current page ends **without** sentence-ending punctuation (`.?!"')]}`) → mid-sentence, join with space.
-   - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
+   - If the current page ends **with** sentence-ending punctuation → check the page-boundary annotation at the end of the proofread file:
+     - `<!--JOIN-->` → continuation, join with space.
+     - `<!--PARA-->` → new paragraph (paragraph break).
+     - If no annotation exists (legacy files without annotations) → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
 4. Merges `## Chapter N` + `## Title` into a single heading `## Chapter N: Title` (preserving chapter numbers from the original).
 5. Cleans up triple+ newlines.
 6. Adds markdown line breaks (two trailing spaces) to blockquote lines: for every consecutive run of `> ` lines, add `  ` (two spaces) before the newline on every line **except** the last line of the run. Without these trailing spaces, consecutive blockquote lines merge into a single line in epub rendering. This is a safety net — trailing spaces should also be added during Phase 2 proofreading, but are easy to forget.
@@ -130,9 +141,9 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
 8. Writes `$ARGUMENTS/metadata.json`.
 9. Reports how many `<!--PB:-->` markers remain per chapter.
 
-### Step 2: Resolve paragraph boundary markers
+### Step 2: Resolve paragraph boundary markers (if any remain)
 
-The `<!--PB:NNN-->` markers indicate ambiguous page boundaries (page ends with a sentence, next page could be new paragraph or continuation). Resolve them **in bulk**:
+If Phase 2 included page-boundary annotations (`<!--JOIN-->` / `<!--PARA-->`), there should be few or no `<!--PB:NNN-->` markers. If some remain (from legacy/unannotated pages), resolve them **in bulk**:
 
 1. Extract all PB page numbers from the chapter files.
 2. For each PB at page N, check the PNG of page **N+1** to see if the first body text line (below the running header) is:
