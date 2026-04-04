@@ -106,7 +106,7 @@ Do NOT summarize or paraphrase — reproduce the author's exact text with only O
 
 ### Periodic command refresh
 
-Every **10 pages**, re-read this command file (`cat .claude/commands/proofread.md`) to refresh your understanding of the full instructions. Also re-read at the start of each new chapter. This counteracts context drift that causes shortcut-taking (batch processing, skipping steps, omitting page-boundary annotations) as the conversation grows long. Do not skip this step — it is as mandatory as the per-page checklist above.
+Every **10 pages**, re-read this command file (located in `.claude/commands/proofread.md`) to refresh your understanding of the full instructions. Also re-read at the start of each new chapter. This counteracts context drift that causes shortcut-taking (batch processing, skipping steps, omitting page-boundary annotations) as the conversation grows long. Do not skip this step — it is as mandatory as the per-page checklist above.
 
 **CRITICAL: Content filtering workaround.** Book content (especially passages involving violence, war, religion, or other sensitive topics) will trigger Anthropic's content filtering policy, causing a 400 error. To avoid this:
 
