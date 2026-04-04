@@ -35,7 +35,7 @@ Write a brief summary of your findings in the `$ARGUMENTS/structure.md` before p
 
 ## Phase 2: Page-by-page proofreading
 
-Process every content page (skipping front/back matter identified in Phase 1). After the proofreading process is interrupted, always refer to the `$ARGUMENTS/structure.md` for findings of Phase 1.
+Process every content page (skipping front/back matter identified in Phase 1). Part/section divider pages (e.g. "PART I", "PART II" title pages) within the content range ARE content pages — do NOT skip them. After the proofreading process is interrupted, always refer to the `$ARGUMENTS/structure.md` for findings of Phase 1.
 
 ### Resumability
 
@@ -94,6 +94,13 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
    - No marker needed on the very last content page.
 
    To determine JOIN vs PARA: when the current page ends with sentence-ending punctuation (`.?!"')]}—`), read the **next** page's PNG and check whether the first body text line (below the running header) is indented or flush left. You're already reading pages sequentially, so you can peek ahead. This eliminates the need for the separate PB-resolution step in Phase 3.
+
+**CHECKLIST — verify ALL steps before moving to the next page:**
+1. Read PNG + OCR ✓
+2. Corrected text (OCR fixes, stripped headers/footers/page numbers, joined lines) ✓
+3. Markdown formatting (headings, italics, bold, blockquotes) ✓
+4. Output file written ✓
+5. Page-boundary annotation appended (`<!--JOIN-->`, `<!--PARA-->`, or none only if hyphenation or last page) ✓
 
 Do NOT summarize or paraphrase — reproduce the author's exact text with only OCR corrections and header/footer removal.
 
