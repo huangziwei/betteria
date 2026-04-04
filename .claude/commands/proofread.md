@@ -104,6 +104,10 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
 
 Do NOT summarize or paraphrase — reproduce the author's exact text with only OCR corrections and header/footer removal.
 
+### Periodic command refresh
+
+Every **10 pages**, re-read this command file (`cat .claude/commands/proofread.md`) to refresh your understanding of the full instructions. Also re-read at the start of each new chapter. This counteracts context drift that causes shortcut-taking (batch processing, skipping steps, omitting page-boundary annotations) as the conversation grows long. Do not skip this step — it is as mandatory as the per-page checklist above.
+
 **CRITICAL: Content filtering workaround.** Book content (especially passages involving violence, war, religion, or other sensitive topics) will trigger Anthropic's content filtering policy, causing a 400 error. To avoid this:
 
 1. Do NOT reproduce any of the book's content in your conversational text output.
