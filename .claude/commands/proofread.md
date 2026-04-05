@@ -4,6 +4,15 @@ You will work through three phases. Be methodical and thorough.
 
 ---
 
+## Phase 0: Resumability
+
+Before doing any work, check what already exists to avoid repeating completed phases:
+
+1. **If `$ARGUMENTS/structure.md` exists**: Phase 1 is complete. Read `structure.md` to load the survey findings and skip directly to Phase 2.
+2. **If `.proofread.txt` files exist in `$ARGUMENTS/artifacts/`**: Phase 2 is in progress. Read `structure.md`, then resume Phase 2 using its per-page resumability   rules (skip already-proofread pages, re-verify the last one).
+3. **If `$ARGUMENTS/chapters/` exists and contains `.md` files**: Phase 3 is in progress or complete. Read `structure.md` and verify the output.
+4. **If none of the above exist**: Start from Phase 1.
+
 ## Phase 1: Survey the book structure
 
 1. Glob `$ARGUMENTS/artifacts/*.png` and `$ARGUMENTS/artifacts/*.txt` to get the total page count.
