@@ -118,7 +118,7 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
 2. Corrected text (OCR fixes, stripped headers/footers/page numbers, joined lines) ✓
 3. Markdown formatting (headings, italics, bold, blockquotes) ✓
 4. Output file written ✓
-5. Page-boundary annotation appended (`<!--JOIN-->`, `<!--PARA-->`, or none only if hyphenation or last page) ✓
+5. Page-boundary annotation appended (`<!--JOIN-->`, `<!--PARA-->`, or `<!--CHAP>`) ✓
 
 Do NOT summarize or paraphrase — reproduce the author's exact text with only OCR corrections and header/footer removal.
 
@@ -240,5 +240,5 @@ Where `pages` is `[first_page, last_page]` inclusive. The `language` field is a 
 - Preserve the author's formatting choices (italics indicated by emphasis, paragraph breaks, section breaks within chapters).
 - If you encounter an ambiguous word, use the context of the sentence and the visual appearance to determine the correct reading.
 - Work systematically through all pages — do not skip content pages.
-- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. The stitching script handles unambiguous cases (mid-sentence, hyphenation) automatically. For ambiguous boundaries (sentence ends at page break), the script inserts `<!--PB:N-->` markers. These are resolved by checking indentation in the next page's PNG — check each one yourself, sequentially, for maximum accuracy.
+- **Paragraph breaks at page boundaries deserve special care.** A page break in the scan is NOT a paragraph break in the book. The stitching script handles unambiguous cases (mid-sentence, hyphenation) automatically. For ambiguous boundaries (sentence ends at page break), the script inserts `<!--JOIN-->`, `<!--JOIN-->` and `<!--CHAP-->` markers. These are resolved by checking indentation in the next page's PNG — check each one yourself, sequentially, for maximum accuracy.
 - **Prefer thoroughness over speed.** When choosing between a faster approach (parallel subagents, batch processing) and a slower but more careful approach (sequential, one-at-a-time checking), always choose the slower, more thorough way.
