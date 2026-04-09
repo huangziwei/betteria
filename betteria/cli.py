@@ -1261,6 +1261,7 @@ def cmd_merge(
 
             # ── Process chapters ──
             epub_chapters = []  # list of (EpubHtml, section_type)
+            _added_images: dict[str, epub.EpubItem] = {}  # track added images
             chapters_meta = meta.get("chapters", [])
 
             def _process_chapter(text, ch_meta, i):
@@ -1281,6 +1282,38 @@ def cmd_merge(
 
                 # Convert full markdown (including heading) → HTML
                 body_html = _text_to_html(text)
+
+                # Embed images referenced in the HTML
+                img_pattern = re.compile(r'<img\s+[^>]*src="([^"]+)"')
+                for img_match in img_pattern.finditer(body_html):
+                    src = img_match.group(1)
+                    img_path = (chapters_dir / src).resolve()
+                    if not img_path.exists():
+                        continue
+                    suffix = img_path.suffix.lower()
+                    media_types = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".gif": "image/gif",
+                        ".svg": "image/svg+xml",
+                    }
+                    media_type = media_types.get(suffix, "image/png")
+                    epub_img_name = f"images/{img_path.name}"
+                    # Avoid adding the same image twice
+                    if epub_img_name not in _added_images:
+                        img_item = epub.EpubItem(
+                            uid=f"img-{img_path.stem}",
+                            file_name=epub_img_name,
+                            media_type=media_type,
+                            content=img_path.read_bytes(),
+                        )
+                        book.add_item(img_item)
+                        _added_images[epub_img_name] = img_item
+                    body_html = body_html.replace(
+                        f'src="{src}"',
+                        f'src="{epub_img_name}"',
+                    )
 
                 # Infer structure
                 section_type = _infer_section_type(ch_meta) if ch_meta else "bodymatter"
@@ -1353,10 +1386,11 @@ def cmd_merge(
                 "\t<p>The text content of this ebook was extracted"
                 " and produced using <b>betteria</b>.</p>"
             )
-            col_lines.append(
-                "\t<p>Illustrations, photographs, and other non-text"
-                " elements from the original edition are not included.</p>"
-            )
+            if not _added_images:
+                col_lines.append(
+                    "\t<p>Illustrations, photographs, and other non-text"
+                    " elements from the original edition are not included.</p>"
+                )
             col_lines.append("</section>")
             colophon.content = "\n".join(col_lines)
             colophon.add_item(style)

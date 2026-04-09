@@ -4,6 +4,15 @@ You will work through three phases. Be methodical and thorough.
 
 ---
 
+## Phase 0: Resumability
+
+Before doing any work, check what already exists to avoid repeating completed phases:
+
+1. **If `$ARGUMENTS/structure.md` exists**: Phase 1 is complete. Read `structure.md` to load the survey findings and skip directly to Phase 2.
+2. **If `.proofread.txt` files exist in `$ARGUMENTS/artifacts/`**: Phase 2 is in progress. Read `structure.md`, then resume Phase 2 using its per-page resumability   rules (skip already-proofread pages, re-verify the last one).
+3. **If `$ARGUMENTS/chapters/` exists and contains `.md` files**: Phase 3 is in progress or complete. Read `structure.md` and verify the output.
+4. **If none of the above exist**: Start from Phase 1.
+
 ## Phase 1: Survey the book structure
 
 1. Glob `$ARGUMENTS/artifacts/*.png` and `$ARGUMENTS/artifacts/*.txt` to get the total page count.
@@ -36,13 +45,13 @@ Write a brief summary of your findings in the `$ARGUMENTS/structure.md` before p
 
 ## Phase 2: Page-by-page proofreading
 
-Process every content page (skipping front/back matter identified in Phase 1). After the proofreading process is interrupted, always refer to the `$ARGUMENTS/structure.md` for findings of Phase 1.
+Process every content page (skipping front/back matter identified in Phase 1). Part/section divider pages (e.g. "PART I", "PART II" title pages) within the content range ARE content pages — do NOT skip them. After the proofreading process is interrupted, always refer to the `$ARGUMENTS/structure.md` for findings of Phase 1.
 
 ### Resumability
 
-- **Single-page layout**: Before processing a page, check if `$ARGUMENTS/artifacts/page-NNN.proofread.txt` already exists. If it does, **skip that page**.
-- **Double-page spread**: Before processing a page, check if **both** `$ARGUMENTS/artifacts/page-NN-L.proofread.txt` and `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` already exist. If both exist, **skip that image**. This makes the command resumable.
-- But always resume from the last proofread page and make sure it was done before moving on to the next un-proofread page.
+- **Single-page layout**: Before processing a page, check if `$ARGUMENTS/artifacts/page-NNN.proofread.txt` already exists. If it does, **skip that page** — EXCEPT for the very last proofread page (the highest-numbered `.proofread.txt` file).
+- **Double-page spread**: Before processing a page, check if **both** `$ARGUMENTS/artifacts/page-NN-L.proofread.txt` and `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` already exist. If both exist, **skip that image** — EXCEPT for the very last proofread image. This makes the command resumable.
+- **Always re-verify the last proofread page**: Read both the PNG and the existing `.proofread.txt`, compare them, and fix any issues (missed OCR errors, unstripped headers, unjoined hyphens, missing markdown formatting). Only after confirming it is correct should you move on to the next un-proofread page. This guards against incomplete work from an interrupted session.
 
 ### Processing each page
 
@@ -97,7 +106,26 @@ Process **one page at a time**, sequentially. Do NOT use batch processing or sub
      - `$ARGUMENTS/artifacts/page-NN-R.proofread.txt` (right book page)
      - Each file contains only that half's text, with headers/page numbers stripped.
 
+5. **Page-boundary annotation**: After writing each proofread file, determine how this page should connect to the **next** page during stitching. Append one of these markers as the very last line of the proofread file:
+   - `<!--JOIN-->` — the next page continues the same paragraph (flush left in the next page's PNG). Use this when the current page ends mid-sentence, OR when it ends with sentence-ending punctuation but the next page's first body line (below the running header) starts flush left.
+   - `<!--PARA-->` — the next page starts a new paragraph (indented in the next page's PNG). Use this when the current page ends with sentence-ending punctuation and the next page's first body line is indented.
+   - No marker needed if the page ends with `word-` (hyphenation) — the hyphen itself tells the stitching script to join.
+   - No marker needed on the very last content page.
+
+   To determine JOIN vs PARA: when the current page ends with sentence-ending punctuation (`.?!"')]}—`), read the **next** page's PNG and check whether the first body text line (below the running header) is indented or flush left. You're already reading pages sequentially, so you can peek ahead. This eliminates the need for the separate PB-resolution step in Phase 3.
+
+**CHECKLIST — verify ALL steps before moving to the next page:**
+1. Read PNG + OCR ✓
+2. Corrected text (OCR fixes, stripped headers/footers/page numbers, joined lines) ✓
+3. Markdown formatting (headings, italics, bold, blockquotes) ✓
+4. Output file written ✓
+5. Page-boundary annotation appended (`<!--JOIN-->`, `<!--PARA-->`, or none only if hyphenation or last page) ✓
+
 Do NOT summarize or paraphrase — reproduce the author's exact text with only OCR corrections and header/footer removal.
+
+### Periodic command refresh
+
+Every **10 pages**, re-read this command file (located in `betteria/.claude/commands/proofread.md`, not in the book directory) to refresh your understanding of the full instructions. Also re-read at the start of each new chapter. This counteracts context drift that causes shortcut-taking (batch processing, skipping steps, omitting page-boundary annotations) as the conversation grows long. Do not skip this step — it is as mandatory as the per-page checklist above.
 
 **CRITICAL: Content filtering workaround.** Book content (especially passages involving violence, war, religion, or other sensitive topics) will trigger Anthropic's content filtering policy, causing a 400 error. To avoid this:
 
@@ -136,16 +164,20 @@ Write a Python script (`$ARGUMENTS/stitch.py`) that:
      - **Japanese** sentence-ending punctuation: `。？！」）』〕】`
      - **English**: join with a space.
      - **Japanese**: join with no space.
-   - If the current page ends **with** sentence-ending punctuation → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
+   - If the current page ends **with** sentence-ending punctuation → check the page-boundary annotation at the end of the proofread file:
+     - `<!--JOIN-->` → continuation (join with a space for English, no space for Japanese).
+     - `<!--PARA-->` → new paragraph (paragraph break).
+     - If no annotation exists (legacy files without annotations) → **ambiguous**. Insert a `<!--PB:NNN-->` marker (where NNN is the page number) with paragraph breaks around it for later review.
 4. Merges `## Chapter N` + `## Title` into a single heading `## Chapter N: Title` (preserving chapter numbers from the original).
 5. Cleans up triple+ newlines.
-6. Writes each chapter to `$ARGUMENTS/chapters/NN-slug.md`.
-7. Writes `$ARGUMENTS/metadata.json`.
-8. Reports how many `<!--PB:-->` markers remain per chapter.
+6. Adds markdown line breaks (two trailing spaces) to blockquote lines: for every consecutive run of `> ` lines, add `  ` (two spaces) before the newline on every line **except** the last line of the run. Without these trailing spaces, consecutive blockquote lines merge into a single line in epub rendering. This is a safety net — trailing spaces should also be added during Phase 2 proofreading, but are easy to forget.
+7. Writes each chapter to `$ARGUMENTS/chapters/NN-slug.md`.
+8. Writes `$ARGUMENTS/metadata.json`.
+9. Reports how many `<!--PB:-->` markers remain per chapter.
 
-### Step 2: Resolve paragraph boundary markers
+### Step 2: Resolve paragraph boundary markers (if any remain)
 
-The `<!--PB:NNN-->` markers indicate ambiguous page boundaries (page ends with a sentence, next page could be new paragraph or continuation). Resolve them **in bulk**:
+If Phase 2 included page-boundary annotations (`<!--JOIN-->` / `<!--PARA-->`), there should be few or no `<!--PB:NNN-->` markers. If some remain (from legacy/unannotated pages), resolve them **in bulk**:
 
 1. Extract all PB page numbers from the chapter files.
 2. For each PB at page N, check the PNG of page **N+1** to see if the first body text line (below the running header) is:
