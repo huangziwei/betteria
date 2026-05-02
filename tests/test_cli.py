@@ -498,6 +498,146 @@ def test_cmd_extract_produces_pngs_and_txt(monkeypatch, tmp_path):
     assert [c[0] for c in extract_calls] == [1, 2]
 
 
+def test_cmd_extract_caps_long_side(monkeypatch, tmp_path):
+    """Effective DPI is reduced so the rendered long side stays <= max_long_side."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    captured: dict[str, object] = {}
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        captured["dpi"] = dpi
+        page = out_dir / "page-1.png"
+        page.write_bytes(b"PNG")
+        return [page]
+
+    # Page is 1776 pt long → DPI cap for 1999 px long side is 1999*72/1776 ≈ 81
+    monkeypatch.setattr(cli, "_get_page_long_side_pts", lambda _: 1776.0)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **kw: None)
+
+    cli.cmd_extract(
+        input_pdf=input_pdf,
+        dpi=300,
+        max_long_side=1999,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert captured["dpi"] == 81
+
+
+def test_cmd_extract_keeps_user_dpi_for_small_pages(monkeypatch, tmp_path):
+    """When page rendered at user DPI is already under the cap, no downscale."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    captured: dict[str, object] = {}
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        captured["dpi"] = dpi
+        page = out_dir / "page-1.png"
+        page.write_bytes(b"PNG")
+        return [page]
+
+    # Tiny page (100 pt long) at any reasonable user DPI stays under 1999 px;
+    # effective DPI must remain the user value (no upscale, no needless cap).
+    monkeypatch.setattr(cli, "_get_page_long_side_pts", lambda _: 100.0)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **kw: None)
+
+    cli.cmd_extract(
+        input_pdf=input_pdf,
+        dpi=150,
+        max_long_side=1999,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert captured["dpi"] == 150
+
+
+def test_cmd_extract_max_long_side_zero_disables_cap(monkeypatch, tmp_path):
+    """max_long_side=0 leaves the user-supplied DPI untouched."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    captured: dict[str, object] = {}
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        captured["dpi"] = dpi
+        page = out_dir / "page-1.png"
+        page.write_bytes(b"PNG")
+        return [page]
+
+    # Even with a huge page, max_long_side=0 should disable the cap and pdfinfo
+    # should not even be consulted.
+    def must_not_call(_):
+        raise AssertionError("_get_page_long_side_pts should not be called")
+
+    monkeypatch.setattr(cli, "_get_page_long_side_pts", must_not_call)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **kw: None)
+
+    cli.cmd_extract(
+        input_pdf=input_pdf,
+        dpi=300,
+        max_long_side=0,
+        show_progress=False,
+        jobs=1,
+    )
+
+    assert captured["dpi"] == 300
+
+
+def test_get_page_long_side_pts_parses(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    def fake_run(cmd, stdout, stderr, check, text):
+        return CompletedProcess(
+            cmd, 0,
+            stdout="Pages: 1\nPage size:       1059.81 x 1775.99 pts\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._get_page_long_side_pts(pdf_path) == 1775.99
+
+
+def test_get_page_long_side_pts_handles_named_size(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    def fake_run(cmd, stdout, stderr, check, text):
+        return CompletedProcess(
+            cmd, 0,
+            stdout="Pages: 1\nPage size:       letter (612 x 792 pts)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._get_page_long_side_pts(pdf_path) == 792.0
+
+
+def test_get_page_long_side_pts_returns_none_on_variable(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    def fake_run(cmd, stdout, stderr, check, text):
+        return CompletedProcess(
+            cmd, 0,
+            stdout="Pages: 5\nPage size:       variable\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._get_page_long_side_pts(pdf_path) is None
+
+
 def test_cmd_extract_rerun(monkeypatch, tmp_path):
     """Re-running extract when the PDF has already been moved should work."""
     input_pdf = tmp_path / "doc.pdf"
@@ -574,10 +714,29 @@ def test_main_extract_defaults(monkeypatch):
 
     assert captured["input_pdf"] == "book.pdf"
     assert captured["dpi"] == 300
+    assert captured["max_long_side"] == 1999
     assert captured["jobs"] == 0
     assert captured["rasterizer"] == "pdftocairo"
     assert captured["show_progress"] is True
     assert captured["ppd"] == "ltr"
+
+
+def test_main_extract_max_long_side_flag(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_extract(**kwargs):
+        captured.update(kwargs)
+        return Path("/tmp/out")
+
+    monkeypatch.setattr(cli, "cmd_extract", fake_cmd_extract)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["betteria", "extract", "book.pdf", "--max-long-side", "0"],
+    )
+
+    cli.main()
+
+    assert captured["max_long_side"] == 0
 
 
 def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
@@ -594,14 +753,16 @@ def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
         "page-3.png": "Chapter 2: Methods\nDetails about methods.",
     }
 
-    def fake_ocr_page(image_path, model_path):
+    def fake_ocr_page(image_path, backend="mlx", model=None):
         return ocr_texts[image_path.name]
 
-    def fake_load_ocr_model(model_path):
-        return None, None
+    def fake_load_ocr_model_mlx(model_path):
+        return None, None, None
 
+    import sys, types
+    sys.modules.setdefault("mlx_vlm", types.ModuleType("mlx_vlm"))
     monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
-    monkeypatch.setattr(cli, "_load_ocr_model", fake_load_ocr_model)
+    monkeypatch.setattr(cli, "_load_ocr_model_mlx", fake_load_ocr_model_mlx)
 
     result = cli.cmd_ocr(input_dir=book_dir, show_progress=False)
 
@@ -625,15 +786,17 @@ def test_cmd_ocr_skips_existing_txt(monkeypatch, tmp_path):
 
     ocr_called_for: list[str] = []
 
-    def fake_ocr_page(image_path, model_path):
+    def fake_ocr_page(image_path, backend="mlx", model=None):
         ocr_called_for.append(image_path.name)
         return "New OCR text for page 2."
 
-    def fake_load_ocr_model(model_path):
-        return None, None
+    def fake_load_ocr_model_mlx(model_path):
+        return None, None, None
 
+    import sys, types
+    sys.modules.setdefault("mlx_vlm", types.ModuleType("mlx_vlm"))
     monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
-    monkeypatch.setattr(cli, "_load_ocr_model", fake_load_ocr_model)
+    monkeypatch.setattr(cli, "_load_ocr_model_mlx", fake_load_ocr_model_mlx)
 
     result = cli.cmd_ocr(input_dir=book_dir, show_progress=False)
 

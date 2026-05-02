@@ -69,6 +69,33 @@ def get_page_count(pdf_path: Path | str) -> int:
     raise RuntimeError("Could not determine page count from pdfinfo output.")
 
 
+def _get_page_long_side_pts(pdf_path: Path | str) -> float | None:
+    """Return the long side of the (uniform) page in points, or ``None``.
+
+    Returns ``None`` if pdfinfo is unavailable, the size cannot be parsed,
+    or the PDF reports variable page sizes.
+    """
+    try:
+        result = subprocess.run(
+            ["pdfinfo", str(pdf_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    for line in result.stdout.splitlines():
+        if line.lower().startswith("page size:"):
+            value = line.split(":", 1)[1]
+            match = re.search(r"([\d.]+)\s*x\s*([\d.]+)\s*pts", value)
+            if match:
+                return max(float(match.group(1)), float(match.group(2)))
+            return None
+    return None
+
+
 def _page_sort_key(path: Path) -> int:
     stem = path.stem
     for part in reversed(stem.split("-")):
@@ -672,14 +699,23 @@ def _extract_text_page(
 def cmd_extract(
     input_pdf: Path | str,
     dpi: int = 300,
+    max_long_side: int = 1999,
     show_progress: bool = True,
     jobs: int = 0,
     rasterizer: Rasterizer = "pdftocairo",
     ppd: str = "ltr",
 ) -> Path:
-    """Extract per-page PNGs and embedded text from a digital (non-scanned) PDF."""
+    """Extract per-page PNGs and embedded text from a digital (non-scanned) PDF.
+
+    The rendered long side is capped at ``max_long_side`` pixels (default
+    1999) by lowering the effective DPI when needed.  The user-supplied
+    ``dpi`` is the upper bound, so smaller pages are never upscaled past
+    it.  Pass ``max_long_side=0`` to disable the cap.
+    """
     if dpi <= 0:
         raise ValueError("DPI must be a positive integer")
+    if max_long_side < 0:
+        raise ValueError("max_long_side must be non-negative")
 
     input_path = Path(input_pdf)
 
@@ -701,10 +737,20 @@ def cmd_extract(
     out_dir = book_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Cap the effective DPI so the rendered long side stays within
+    # max_long_side.  Falls back to the user dpi if pdfinfo can't report
+    # a uniform page size.
+    effective_dpi = dpi
+    if max_long_side > 0:
+        page_long_pts = _get_page_long_side_pts(original_copy)
+        if page_long_pts:
+            dpi_cap = max(1, int(max_long_side * 72 / page_long_pts))
+            effective_dpi = min(dpi, dpi_cap)
+
     # Rasterize directly into artifacts/ (no thresholding needed)
     png_paths = pdf_to_images(
         original_copy,
-        dpi=dpi,
+        dpi=effective_dpi,
         out_dir=out_dir,
         show_progress=show_progress,
         jobs=jobs,
@@ -748,15 +794,19 @@ def cmd_extract(
 
 # ── Subcommand: ocr ──────────────────────────────────────────────────
 
-_DEFAULT_OCR_MODEL = "mlx-community/PaddleOCR-VL-1.5-6bit"
+_DEFAULT_OCR_MODEL_MLX = "mlx-community/PaddleOCR-VL-1.5-6bit"
+
+# Kept for backward compatibility with any external callers.
+_DEFAULT_OCR_MODEL = _DEFAULT_OCR_MODEL_MLX
 
 # Module-level cache so the model is loaded once per process.
-_ocr_model_cache: dict[str, tuple] = {}
+_ocr_model_cache: dict[str, object] = {}
 
 
-def _load_ocr_model(model_path: str) -> tuple:
+def _load_ocr_model_mlx(model_path: str) -> tuple:
     """Load (or return cached) mlx-vlm model, processor, and config."""
-    if model_path not in _ocr_model_cache:
+    cache_key = f"mlx::{model_path}"
+    if cache_key not in _ocr_model_cache:
         import warnings
 
         import huggingface_hub.utils
@@ -781,20 +831,16 @@ def _load_ocr_model(model_path: str) -> tuple:
             if not prev:
                 huggingface_hub.utils.enable_progress_bars()
 
-        _ocr_model_cache[model_path] = (model, processor, config)
-    return _ocr_model_cache[model_path]
+        _ocr_model_cache[cache_key] = (model, processor, config)
+    return _ocr_model_cache[cache_key]  # type: ignore[return-value]
 
 
-def _ocr_page(
-    image_path: Path,
-    model_path: str = _DEFAULT_OCR_MODEL,
-) -> str:
-    """OCR a single page image via mlx-vlm with PaddleOCR-VL."""
+def _ocr_page_mlx(image_path: Path, model_path: str) -> str:
+    """OCR a single page image via mlx-vlm."""
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
-    model, processor, config = _load_ocr_model(model_path)
-
+    model, processor, config = _load_ocr_model_mlx(model_path)
     prompt = apply_chat_template(processor, config, "OCR:", num_images=1)
     result = generate(
         model,
@@ -805,6 +851,17 @@ def _ocr_page(
         verbose=False,
     )
     return result.text
+
+
+def _ocr_page(
+    image_path: Path,
+    backend: str = "mlx",
+    model: str = _DEFAULT_OCR_MODEL_MLX,
+) -> str:
+    """Dispatch a single-page OCR call to the chosen backend."""
+    if backend == "mlx":
+        return _ocr_page_mlx(image_path, model)
+    raise ValueError(f"Unknown OCR backend: {backend!r}")
 
 
 def _slugify(text: str) -> str:
@@ -912,7 +969,8 @@ def _detect_chapters(page_texts: list[str]) -> dict:
 
 def cmd_ocr(
     input_dir: Path | str,
-    model: str = _DEFAULT_OCR_MODEL,
+    backend: str = "mlx",
+    model: str | None = None,
     show_progress: bool = True,
 ) -> Path:
     """OCR enhanced PNGs and save per-page text files.
@@ -921,14 +979,22 @@ def cmd_ocr(
     (e.g. ``page-001.txt``).  Pages that already have a ``.txt`` file are
     skipped, so the command is safe to re-run after partial completion or
     after manually editing individual page texts.
+
+    ``backend`` selects the inference engine. ``mlx`` uses ``mlx-vlm``
+    (Apple Silicon only).
     """
-    try:
-        import mlx_vlm  # noqa: F401
-    except ImportError:
-        raise SystemExit(
-            "The 'ocr' command requires mlx-vlm, which is not installed.\n"
-            "Install it with: uv sync --extra ocr"
-        )
+    if backend == "mlx":
+        if model is None:
+            model = _DEFAULT_OCR_MODEL_MLX
+        try:
+            import mlx_vlm  # noqa: F401
+        except ImportError:
+            raise SystemExit(
+                "The 'ocr' command with --backend mlx requires mlx-vlm.\n"
+                "Install it with: uv sync --extra ocr (Apple Silicon only)"
+            )
+    else:
+        raise SystemExit(f"Unknown OCR backend: {backend!r}")
 
     input_path = Path(input_dir)
     if not input_path.is_dir():
@@ -960,8 +1026,10 @@ def cmd_ocr(
                 f"[dim]Skipping {skipped} pages with existing text.[/dim]"
             )
 
-        console.print(f"[dim]Loading OCR model {model}...[/dim]")
-        _load_ocr_model(model)
+        console.print(
+            f"[dim]Loading OCR model {model} (backend={backend})...[/dim]"
+        )
+        _load_ocr_model_mlx(model)
 
         skipped = len(png_paths) - len(todo)
         with _progress(len(png_paths), "OCR processing", show_progress) as (
@@ -970,7 +1038,7 @@ def cmd_ocr(
         ):
             progress.advance(task_id, skipped)
             for png_path, txt_path in todo:
-                text = _ocr_page(png_path, model_path=model)
+                text = _ocr_page(png_path, backend=backend, model=model)
                 txt_path.write_text(text, encoding="utf-8")
                 progress.advance(task_id, 1)
     else:
@@ -1635,6 +1703,15 @@ def main():
         help="DPI for rasterizing PDF pages (default: 300)",
     )
     p_extract.add_argument(
+        "--max-long-side",
+        type=int,
+        default=1999,
+        help=(
+            "Cap the long side of rendered PNGs in pixels by lowering the "
+            "effective DPI as needed (default: 1999; pass 0 to disable)"
+        ),
+    )
+    p_extract.add_argument(
         "--quiet",
         action="store_true",
         help="Disable progress bars",
@@ -1670,9 +1747,15 @@ def main():
     )
     p_ocr.add_argument("input", help="Path to book directory")
     p_ocr.add_argument(
+        "--backend",
+        choices=["mlx"],
+        default="mlx",
+        help="Inference backend (default: mlx for Apple Silicon)",
+    )
+    p_ocr.add_argument(
         "--model",
-        default=_DEFAULT_OCR_MODEL,
-        help=f"mlx-vlm model for OCR (default: {_DEFAULT_OCR_MODEL})",
+        default=None,
+        help=f"OCR model (default: {_DEFAULT_OCR_MODEL_MLX})",
     )
     p_ocr.add_argument(
         "--quiet",
@@ -1740,6 +1823,7 @@ def main():
         out_dir = cmd_extract(
             input_pdf=args.input,
             dpi=args.dpi,
+            max_long_side=args.max_long_side,
             show_progress=not args.quiet,
             jobs=args.jobs,
             rasterizer=args.rasterizer,
@@ -1750,6 +1834,7 @@ def main():
     elif args.command == "ocr":
         out_dir = cmd_ocr(
             input_dir=args.input,
+            backend=args.backend,
             model=args.model,
             show_progress=not args.quiet,
         )
