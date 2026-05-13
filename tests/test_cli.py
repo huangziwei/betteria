@@ -707,6 +707,65 @@ def test_cmd_merge_title_override(monkeypatch, tmp_path):
     assert epub_out.exists()
 
 
+def test_cmd_merge_accepts_chapter_path_with_dir_prefix(tmp_path):
+    """metadata.json 'file' may be either 'foo.md' or 'chapters/foo.md'."""
+    book_dir = tmp_path / "book"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True)
+    (chapters_dir / "01-intro.md").write_text("Body.", encoding="utf-8")
+
+    metadata_obj = {
+        "title": "Test Book",
+        "author": "Test Author",
+        "chapters": [
+            {"number": 1, "title": "Intro", "file": "chapters/01-intro.md"},
+        ],
+    }
+    (book_dir / "metadata.json").write_text(
+        json.dumps(metadata_obj), encoding="utf-8"
+    )
+
+    epub_out, _ = cli.cmd_merge(
+        input_dir=book_dir,
+        epub_only=True,
+        show_progress=False,
+    )
+
+    import zipfile
+
+    with zipfile.ZipFile(epub_out) as z:
+        names = z.namelist()
+        # Chapter content xhtml should exist
+        assert any("ch_001" in n for n in names)
+
+
+def test_cmd_merge_raises_on_missing_chapter_files(tmp_path):
+    """Missing chapter files referenced in metadata.json must fail loudly."""
+    book_dir = tmp_path / "book"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True)
+    (chapters_dir / "01-present.md").write_text("Body.", encoding="utf-8")
+
+    metadata_obj = {
+        "title": "Test Book",
+        "author": "Test Author",
+        "chapters": [
+            {"number": 1, "title": "One", "file": "01-present.md"},
+            {"number": 2, "title": "Two", "file": "02-missing.md"},
+        ],
+    }
+    (book_dir / "metadata.json").write_text(
+        json.dumps(metadata_obj), encoding="utf-8"
+    )
+
+    with pytest.raises(FileNotFoundError, match="02-missing.md"):
+        cli.cmd_merge(
+            input_dir=book_dir,
+            epub_only=True,
+            show_progress=False,
+        )
+
+
 def test_text_to_html():
     text = "First paragraph.\n\nSecond paragraph.\n\nThird."
     html = cli._text_to_html(text)

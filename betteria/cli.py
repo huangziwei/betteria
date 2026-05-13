@@ -1343,16 +1343,31 @@ def cmd_merge(
                 return epub_ch, section_type
 
             if chapters_meta:
+                missing: list[str] = []
                 for i, ch in enumerate(chapters_meta, 1):
-                    filepath = chapters_dir / ch["file"]
+                    # Accept both "foo.md" and "chapters/foo.md" — strip any
+                    # directory prefix and resolve under chapters_dir.
+                    filepath = chapters_dir / Path(ch["file"]).name
                     if not filepath.exists():
+                        missing.append(ch["file"])
                         continue
                     text = filepath.read_text(encoding="utf-8")
                     epub_chapters.append(_process_chapter(text, ch, i))
+                if missing:
+                    raise FileNotFoundError(
+                        f"Chapter files listed in {metadata_path} were not "
+                        f"found in {chapters_dir}: {missing}"
+                    )
             else:
                 for i, ch_file in enumerate(chapter_files, 1):
                     text = ch_file.read_text(encoding="utf-8")
                     epub_chapters.append(_process_chapter(text, None, i))
+
+            if not epub_chapters:
+                raise RuntimeError(
+                    f"No chapters were added to the EPUB. Check {chapters_dir} "
+                    f"and {metadata_path}."
+                )
 
             # ── Colophon ──
             colophon = epub.EpubHtml(
