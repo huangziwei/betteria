@@ -52,18 +52,6 @@ Rasterizes each page and applies adaptive thresholding to produce clean black-an
 - `--rasterizer` — `pdftocairo` (default) or `pdftoppm`
 - `--ppd` — page progression direction: `ltr` (default) or `rtl`
 
-#### Right-to-left books (`--ppd rtl`)
-
-Some right-to-left books (e.g. Japanese) are distributed as PDFs whose page
-**pairs are swapped**, so that an ordinary two-up viewer shows the spreads
-correctly when read right-to-left. Read as single pages the folios run out of
-order (`…11, 10, 13, 12…`). Passing `--ppd rtl` de-interleaves the pages back
-into correct single-page reading order (keeping page 1 as the cover), so the
-artifacts — and everything downstream (`ocr`, `proofread`, the merged
-single-page PDF) — come out in reading order. The same flag is available on
-`extract`. The resolved order is recorded in `<book-dir>/page_order.json` so an
-interrupted run resumes consistently. (Default `ltr` is a no-op.)
-
 ### `betteria ocr <book-dir>`
 
 Runs a local VLM on the enhanced PNGs to produce per-page `.txt` files.
