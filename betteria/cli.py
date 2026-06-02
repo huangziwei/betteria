@@ -78,6 +78,82 @@ def _page_sort_key(path: Path) -> int:
     return sys.maxsize
 
 
+def _spread_reading_order(total_pages: int, lead: int = 1) -> list[int]:
+    """Map each output slot (0-based) to its source PDF page index (0-based).
+
+    Some right-to-left books (e.g. Japanese) are distributed as PDFs whose
+    page pairs are swapped, so that a left-to-right two-up viewer renders the
+    spreads correctly when read right-to-left.  Read as single pages the
+    printed folios then run 11, 10, 13, 12, 15, 14, ...  This undoes the
+    swap: ``lead`` leading single pages (typically a standalone cover) are
+    kept in place, every following adjacent pair is swapped, and a leftover
+    trailing page (e.g. a back cover) is kept in place.  ``lead=1`` matches
+    the common cover + spreads + back-cover layout.
+    """
+    lead = max(0, min(lead, total_pages))
+    order = list(range(lead))
+    i = lead
+    while i + 1 < total_pages:
+        order.append(i + 1)
+        order.append(i)
+        i += 2
+    if i < total_pages:
+        order.append(i)
+    return order
+
+
+def _resolve_page_order(
+    book_dir: Path,
+    total_pages: int,
+    ppd: str,
+    console: Console | None = None,
+) -> list[int]:
+    """Return the output-slot -> source-page permutation for a book.
+
+    The resolved order is persisted to ``<book_dir>/page_order.json`` when it
+    is non-trivial, so an interrupted run resumed later reuses the same order
+    instead of silently mixing reading directions.  A previously saved order
+    always wins (and is validated against the current page count).
+    """
+    order_path = book_dir / "page_order.json"
+    if order_path.exists():
+        try:
+            data = json.loads(order_path.read_text(encoding="utf-8"))
+            saved = data.get("order", [])
+        except (json.JSONDecodeError, OSError):
+            saved = []
+        if sorted(saved) == list(range(total_pages)):
+            if (
+                console is not None
+                and ppd == "ltr"
+                and data.get("ppd") == "rtl"
+            ):
+                console.print(
+                    "[yellow]Reusing saved RTL page order from "
+                    "page_order.json (ignoring --ppd ltr).[/yellow]"
+                )
+            return saved
+        # Stale marker (page count changed); fall through and recompute.
+
+    if ppd == "rtl":
+        order = _spread_reading_order(total_pages, lead=1)
+        order_path.write_text(
+            json.dumps(
+                {
+                    "ppd": "rtl",
+                    "lead": 1,
+                    "total_pages": total_pages,
+                    "order": order,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return order
+
+    return list(range(total_pages))
+
+
 def _coerce_jobs(value: str | int | None) -> int:
     if isinstance(value, int):
         parsed = value
@@ -422,6 +498,7 @@ def cmd_enhance(
     show_progress: bool = True,
     jobs: int = 0,
     rasterizer: Rasterizer = "pdftocairo",
+    ppd: str = "ltr",
 ) -> Path:
     """Rasterize a PDF and save enhanced (whitened) PNGs to ``<stem>/artifacts/``.
 
@@ -482,6 +559,9 @@ def cmd_enhance(
         out_dir / f"page-{i + 1:0{width}d}.png"
         for i in range(total_pages)
     ]
+    # Output slot i is filled from source PDF page ``order[i]`` (identity for
+    # ``ppd == "ltr"``; a spread de-interleave for ``ppd == "rtl"``).
+    order = _resolve_page_order(book_dir, total_pages, ppd, console)
     pages_todo = [i for i, ep in enumerate(enhanced_paths) if not ep.exists()]
 
     if not pages_todo:
@@ -509,9 +589,10 @@ def cmd_enhance(
         if not png_paths:
             raise RuntimeError("No PNG pages generated from input PDF")
 
-        # Pair rasterized pages with their enhanced output paths, keep only TODO
+        # Pair rasterized pages with their enhanced output paths, keep only
+        # TODO.  ``order[i]`` selects which source page lands in slot ``i``.
         todo: list[tuple[Path, Path]] = [
-            (png_paths[i], enhanced_paths[i]) for i in pages_todo
+            (png_paths[order[i]], enhanced_paths[i]) for i in pages_todo
         ]
 
         worker_target = jobs if jobs > 0 else _available_cpu_count()
@@ -594,6 +675,7 @@ def cmd_extract(
     show_progress: bool = True,
     jobs: int = 0,
     rasterizer: Rasterizer = "pdftocairo",
+    ppd: str = "ltr",
 ) -> Path:
     """Extract per-page PNGs and embedded text from a digital (non-scanned) PDF."""
     if dpi <= 0:
@@ -632,24 +714,33 @@ def cmd_extract(
     if not png_paths:
         raise RuntimeError("No PNG pages generated from input PDF")
 
-    # Rename Poppler output (page-1.png, page-2.png, ...) to zero-padded names
-    width = len(str(len(png_paths)))
+    # Map output slot -> source page (identity for ltr, spread de-interleave
+    # for rtl).  Poppler already zero-pads its output, so source and final
+    # names share one namespace; rename in two phases (source -> temp ->
+    # final) so a reordering can't clobber a not-yet-moved source.
+    total_pages = len(png_paths)
+    width = len(str(total_pages))
+    order = _resolve_page_order(book_dir, total_pages, ppd)
+
+    temp_paths: list[Path] = []
+    for slot, src in enumerate(order):
+        tmp = out_dir / f".reorder-{slot}.png"
+        png_paths[src].rename(tmp)
+        temp_paths.append(tmp)
     final_paths: list[Path] = []
-    for i, raw_path in enumerate(png_paths):
-        final = out_dir / f"page-{i + 1:0{width}d}.png"
-        if raw_path != final:
-            raw_path.rename(final)
+    for slot, tmp in enumerate(temp_paths):
+        final = out_dir / f"page-{slot + 1:0{width}d}.png"
+        tmp.rename(final)
         final_paths.append(final)
 
-    # Extract embedded text per page
-    total_pages = len(final_paths)
+    # Extract embedded text per page (slot's source PDF page is order[slot] + 1)
     with _progress(total_pages, "Extracting text", show_progress) as (
         progress,
         task_id,
     ):
-        for i, png_path in enumerate(final_paths):
+        for slot, png_path in enumerate(final_paths):
             txt_path = png_path.with_suffix(".txt")
-            _extract_text_page(original_copy, i + 1, txt_path)
+            _extract_text_page(original_copy, order[slot] + 1, txt_path)
             progress.advance(task_id, 1)
 
     return book_dir
@@ -1519,6 +1610,17 @@ def main():
         default="pdftocairo",
         help="Poppler backend (default: pdftocairo)",
     )
+    p_enhance.add_argument(
+        "--ppd",
+        choices=["ltr", "rtl"],
+        default="ltr",
+        help=(
+            "Page progression direction (default: ltr). Use 'rtl' for "
+            "right-to-left books (e.g. Japanese) whose PDF stores spreads as "
+            "swapped page pairs; it de-interleaves them into correct "
+            "single-page order, keeping page 1 as the cover."
+        ),
+    )
 
     # ── extract ──
     p_extract = subparsers.add_parser(
@@ -1548,6 +1650,17 @@ def main():
         choices=["pdftoppm", "pdftocairo"],
         default="pdftocairo",
         help="Poppler backend (default: pdftocairo)",
+    )
+    p_extract.add_argument(
+        "--ppd",
+        choices=["ltr", "rtl"],
+        default="ltr",
+        help=(
+            "Page progression direction (default: ltr). Use 'rtl' for "
+            "right-to-left books whose PDF stores spreads as swapped page "
+            "pairs; it de-interleaves them into correct single-page order, "
+            "keeping page 1 as the cover."
+        ),
     )
 
     # ── ocr ──
@@ -1619,6 +1732,7 @@ def main():
             show_progress=not args.quiet,
             jobs=args.jobs,
             rasterizer=args.rasterizer,
+            ppd=args.ppd,
         )
         console.print(f"[green]Enhanced PNGs saved to {out_dir}[/green]")
 
@@ -1629,6 +1743,7 @@ def main():
             show_progress=not args.quiet,
             jobs=args.jobs,
             rasterizer=args.rasterizer,
+            ppd=args.ppd,
         )
         console.print(f"[green]Extracted PNGs and text to {out_dir}[/green]")
 

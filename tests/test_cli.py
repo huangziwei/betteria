@@ -310,6 +310,147 @@ def test_cmd_enhance_skips_all_when_complete(monkeypatch, tmp_path):
     assert not pdf_to_images_called
 
 
+# ── Page-order reordering (--ppd) ─────────────────────────────────────
+
+
+def test_spread_reading_order_basic():
+    # lead=1: page 1 (cover) kept, pairs (2,3),(4,5)... swapped, tail kept
+    assert cli._spread_reading_order(6, lead=1) == [0, 2, 1, 4, 3, 5]
+    assert cli._spread_reading_order(5, lead=1) == [0, 2, 1, 4, 3]
+    # lead=0: pure pairwise swap from the start
+    assert cli._spread_reading_order(6, lead=0) == [1, 0, 3, 2, 5, 4]
+
+
+def test_spread_reading_order_is_a_permutation():
+    for n in (1, 2, 3, 7, 212):
+        order = cli._spread_reading_order(n, lead=1)
+        assert sorted(order) == list(range(n))
+
+
+def _fake_sources(out_dir, n):
+    pages = [out_dir / f"src-{i}.png" for i in range(n)]
+    for page in pages:
+        page.write_bytes(b"PNG")
+    return pages
+
+
+def test_cmd_enhance_ppd_rtl_reorders(monkeypatch, tmp_path):
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        return _fake_sources(out_dir, 4)
+
+    mapping: dict[str, str] = {}  # output slot name -> source name
+
+    def fake_whiten(png_path, out_path, **kwargs):
+        Path(out_path).write_bytes(b"PNG-enhanced")
+        mapping[Path(out_path).name] = Path(png_path).name
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
+
+    book_dir = cli.cmd_enhance(
+        input_pdf=input_pdf, show_progress=False, jobs=1, ppd="rtl"
+    )
+
+    # lead=1 over 4 pages -> order [0, 2, 1, 3]
+    assert mapping["page-1.png"] == "src-0.png"  # cover stays first
+    assert mapping["page-2.png"] == "src-2.png"
+    assert mapping["page-3.png"] == "src-1.png"
+    assert mapping["page-4.png"] == "src-3.png"
+
+    saved = json.loads((book_dir / "page_order.json").read_text())
+    assert saved["ppd"] == "rtl"
+    assert saved["order"] == [0, 2, 1, 3]
+
+
+def test_cmd_enhance_ltr_writes_no_order_file(monkeypatch, tmp_path):
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        return _fake_sources(out_dir, 4)
+
+    def fake_whiten(png_path, out_path, **kwargs):
+        Path(out_path).write_bytes(b"PNG-enhanced")
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
+
+    book_dir = cli.cmd_enhance(input_pdf=input_pdf, show_progress=False, jobs=1)
+    assert not (book_dir / "page_order.json").exists()
+
+
+def test_cmd_enhance_resume_reuses_saved_order(monkeypatch, tmp_path):
+    """A saved page_order.json is honored even when ppd defaults to ltr."""
+    book_dir = tmp_path / "doc"
+    book_dir.mkdir()
+    (book_dir / "doc.original.pdf").write_bytes(b"%PDF")
+    (book_dir / "page_order.json").write_text(
+        json.dumps(
+            {"ppd": "rtl", "lead": 1, "total_pages": 4, "order": [0, 2, 1, 3]}
+        )
+    )
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        return _fake_sources(out_dir, 4)
+
+    mapping: dict[str, str] = {}
+
+    def fake_whiten(png_path, out_path, **kwargs):
+        Path(out_path).write_bytes(b"PNG-enhanced")
+        mapping[Path(out_path).name] = Path(png_path).name
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
+
+    # Resume via directory input, no --ppd (defaults to ltr); saved order wins
+    cli.cmd_enhance(input_pdf=book_dir, show_progress=False, jobs=1)
+
+    assert mapping["page-2.png"] == "src-2.png"
+    assert mapping["page-3.png"] == "src-1.png"
+
+
+def test_cmd_extract_ppd_rtl_reorders(monkeypatch, tmp_path):
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        # Poppler-style names in source (PDF) order; content tags the source.
+        pages = [out_dir / f"page-{i + 1}.png" for i in range(4)]
+        for i, page in enumerate(pages):
+            page.write_bytes(f"src{i}".encode())
+        return pages
+
+    text_pages: list[int] = []
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        text_pages.append(page)
+        Path(txt_path).write_text(f"page {page}")
+
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    book_dir = cli.cmd_extract(
+        input_pdf=input_pdf, show_progress=False, jobs=1, ppd="rtl"
+    )
+    artifacts = book_dir / "artifacts"
+
+    # order [0,2,1,3]: slot1<-src0, slot2<-src2, slot3<-src1, slot4<-src3
+    assert (artifacts / "page-1.png").read_bytes() == b"src0"
+    assert (artifacts / "page-2.png").read_bytes() == b"src2"
+    assert (artifacts / "page-3.png").read_bytes() == b"src1"
+    assert (artifacts / "page-4.png").read_bytes() == b"src3"
+    # Text extraction reads the matching source PDF page (order[slot] + 1)
+    assert text_pages == [1, 3, 2, 4]
+    # Two-phase rename leaves no temp files behind
+    assert not list(artifacts.glob(".reorder-*.png"))
+
+
 def test_cmd_extract_produces_pngs_and_txt(monkeypatch, tmp_path):
     input_pdf = tmp_path / "doc.pdf"
     input_pdf.write_bytes(b"%PDF")
@@ -404,6 +545,8 @@ def test_main_extract_subcommand(monkeypatch):
             "2",
             "--rasterizer",
             "pdftoppm",
+            "--ppd",
+            "rtl",
         ],
     )
 
@@ -414,6 +557,7 @@ def test_main_extract_subcommand(monkeypatch):
     assert captured["jobs"] == 2
     assert captured["rasterizer"] == "pdftoppm"
     assert captured["show_progress"] is True
+    assert captured["ppd"] == "rtl"
 
 
 def test_main_extract_defaults(monkeypatch):
@@ -433,6 +577,7 @@ def test_main_extract_defaults(monkeypatch):
     assert captured["jobs"] == 0
     assert captured["rasterizer"] == "pdftocairo"
     assert captured["show_progress"] is True
+    assert captured["ppd"] == "ltr"
 
 
 def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
@@ -830,6 +975,8 @@ def test_main_enhance_subcommand(monkeypatch):
             "auto",
             "--rasterizer",
             "pdftocairo",
+            "--ppd",
+            "rtl",
         ],
     )
 
@@ -839,6 +986,7 @@ def test_main_enhance_subcommand(monkeypatch):
     assert captured["dpi"] == 200
     assert captured["jobs"] == 0
     assert captured["rasterizer"] == "pdftocairo"
+    assert captured["ppd"] == "rtl"
 
 
 def test_main_enhance_defaults(monkeypatch):
@@ -860,6 +1008,7 @@ def test_main_enhance_defaults(monkeypatch):
     assert captured["jobs"] == 0
     assert captured["rasterizer"] == "pdftocairo"
     assert captured["show_progress"] is True
+    assert captured["ppd"] == "ltr"
 
 
 def test_main_ocr_subcommand(monkeypatch):
