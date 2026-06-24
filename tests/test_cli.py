@@ -759,7 +759,8 @@ def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
     def fake_load_ocr_model_mlx(model_path):
         return None, None, None
 
-    import sys, types
+    import sys
+    import types
     sys.modules.setdefault("mlx_vlm", types.ModuleType("mlx_vlm"))
     monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
     monkeypatch.setattr(cli, "_load_ocr_model_mlx", fake_load_ocr_model_mlx)
@@ -793,7 +794,8 @@ def test_cmd_ocr_skips_existing_txt(monkeypatch, tmp_path):
     def fake_load_ocr_model_mlx(model_path):
         return None, None, None
 
-    import sys, types
+    import sys
+    import types
     sys.modules.setdefault("mlx_vlm", types.ModuleType("mlx_vlm"))
     monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
     monkeypatch.setattr(cli, "_load_ocr_model_mlx", fake_load_ocr_model_mlx)
@@ -928,7 +930,8 @@ def test_cmd_merge_untitled_chapter_uses_first_words_in_toc(tmp_path):
         show_progress=False,
     )
 
-    import zipfile, re
+    import zipfile
+    import re
 
     with zipfile.ZipFile(epub_out) as z:
         toc_titles = []
@@ -1232,3 +1235,169 @@ def test_main_merge_subcommand(monkeypatch):
     assert captured["author"] == "Author"
     assert captured["epub_only"] is True
     assert captured["pdf_only"] is False
+    assert captured["embed_text"] is True
+    assert captured["horizontal_text"] is False
+
+
+def test_main_merge_text_layer_flags(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cmd_merge(**kwargs):
+        captured.update(kwargs)
+        return None, Path("/tmp/book.pdf")
+
+    monkeypatch.setattr(cli, "cmd_merge", fake_cmd_merge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria", "merge", "book/", "--pdf-only",
+            "--no-pdf-text", "--pdf-text-horizontal",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["embed_text"] is False
+    assert captured["horizontal_text"] is True
+
+
+# ── Searchable-PDF text layer ────────────────────────────────────────
+
+
+def test_markdown_to_plaintext_strips_syntax():
+    md = (
+        "## Heading\n\n*emph* and **bold** with `code`\n\n"
+        "> a blockquote\n\n[BLANK PAGE]\n\n---\n\nTail.\n<!--PARA-->"
+    )
+    out = cli._markdown_to_plaintext(md)
+    assert "Heading" in out and "Tail." in out
+    assert not any(sym in out for sym in "*#>`")
+    assert "BLANK PAGE" not in out
+    assert "<!--" not in out
+
+
+def test_proofread_units_words_vs_chars():
+    assert cli._proofread_units("the cat sat", cjk=False) == ["the", "cat", "sat"]
+    assert cli._proofread_units("猫が居る", cjk=True) == ["猫", "が", "居", "る"]
+
+
+def test_align_tokens_corrects_and_drops_ocr_only():
+    body = ("1", "1", "2")
+    ocr = [
+        {"text": "teh", "x": 0, "y": 10, "w": 10, "h": 5, "col": body},
+        {"text": "cat", "x": 12, "y": 10, "w": 10, "h": 5, "col": body},
+        # a running header Tesseract picked up but proofreading removed
+        {"text": "RUNHEAD", "x": 0, "y": 60, "w": 40, "h": 5, "col": ("1", "1", "9")},
+        {"text": "sat", "x": 0, "y": 70, "w": 10, "h": 5, "col": ("1", "1", "3")},
+        {"text": "down", "x": 12, "y": 70, "w": 10, "h": 5, "col": ("1", "1", "3")},
+    ]
+    placed = cli._align_tokens(ocr, ["the", "cat", "sat", "down"], cjk=False)
+    assert [text for _, text in placed] == ["the", "cat", "sat", "down"]
+    # corrected "the" rides on the OCR box of the misspelled "teh"
+    assert placed[0][0]["x"] == 0 and placed[0][0]["y"] == 10
+
+
+def test_group_columns_keeps_columns_contiguous():
+    a, b = ("1", "1", "1"), ("1", "1", "2")
+    placed = [
+        ({"x": 0, "y": 0, "w": 4, "h": 4, "col": a}, "あ"),
+        ({"x": 0, "y": 5, "w": 4, "h": 4, "col": a}, "い"),
+        ({"x": 9, "y": 0, "w": 4, "h": 4, "col": b}, "う"),
+    ]
+    runs = cli._group_columns(placed)
+    assert [text for _, text in runs] == ["あい", "う"]
+
+
+def test_text_layer_pdf_is_searchable(monkeypatch, tmp_path):
+    import shutil
+    from subprocess import run
+
+    if shutil.which("pdftotext") is None:
+        pytest.skip("pdftotext (poppler) not available")
+
+    from PIL import Image as PILImage
+
+    img_path = tmp_path / "page-1.png"
+    PILImage.new("L", (200, 100), 255).save(str(img_path))
+
+    def fake_tokens(image_path, lang, psm, vertical, split_chars):
+        return [
+            {"text": "Helo", "x": 10, "y": 20, "w": 60, "h": 30,
+             "col": ("1", "1", "1")},
+            {"text": "world", "x": 80, "y": 20, "w": 70, "h": 30,
+             "col": ("1", "1", "1")},
+        ]
+
+    monkeypatch.setattr(cli, "_tesseract_tokens", fake_tokens)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    out_pdf = tmp_path / "out.pdf"
+    cli.convert_images_to_pdf(
+        [img_path], out_pdf, page_texts=["Hello world"], lang="en",
+    )
+    text = run(
+        ["pdftotext", str(out_pdf), "-"], capture_output=True, text=True
+    ).stdout
+    assert "Hello" in text and "world" in text   # corrected from "Helo"
+    assert "Helo" not in text
+
+
+def test_text_layer_vertical_japanese_order(monkeypatch, tmp_path):
+    import shutil
+    from subprocess import run
+
+    if shutil.which("pdftotext") is None:
+        pytest.skip("pdftotext (poppler) not available")
+
+    from PIL import Image as PILImage
+
+    img_path = tmp_path / "page-1.png"
+    PILImage.new("L", (200, 200), 255).save(str(img_path))
+
+    # Two columns, right-to-left; Tesseract emits them in reading order.
+    def fake_tokens(image_path, lang, psm, vertical, split_chars):
+        return [
+            {"text": "あ", "x": 150, "y": 20, "w": 20, "h": 20, "col": ("1", "1", "1")},
+            {"text": "い", "x": 150, "y": 44, "w": 20, "h": 20, "col": ("1", "1", "1")},
+            {"text": "う", "x": 110, "y": 20, "w": 20, "h": 20, "col": ("1", "1", "2")},
+            {"text": "え", "x": 110, "y": 44, "w": 20, "h": 20, "col": ("1", "1", "2")},
+        ]
+
+    monkeypatch.setattr(cli, "_tesseract_tokens", fake_tokens)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    out_pdf = tmp_path / "out.pdf"
+    cli.convert_images_to_pdf(
+        [img_path], out_pdf, page_texts=["あいうえ"], lang="ja", vertical=True,
+    )
+    text = run(
+        ["pdftotext", str(out_pdf), "-"], capture_output=True, text=True
+    ).stdout
+    flat = "".join(text.split())
+    assert "あいうえ" in flat   # correct vertical reading order, geometric mode
+
+
+def test_cmd_merge_image_only_pdf_has_no_text(monkeypatch, tmp_path):
+    import shutil
+    from subprocess import run
+
+    if shutil.which("pdftotext") is None:
+        pytest.skip("pdftotext (poppler) not available")
+
+    book_dir = tmp_path / "book"
+    artifacts_dir = book_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+
+    from PIL import Image as PILImage
+
+    PILImage.new("L", (100, 100), 255).save(str(artifacts_dir / "page-1.png"))
+    (artifacts_dir / "page-1.proofread.txt").write_text("Hi.", encoding="utf-8")
+
+    _, pdf_out = cli.cmd_merge(
+        input_dir=book_dir, embed_text=False, show_progress=False,
+    )
+    text = run(
+        ["pdftotext", str(pdf_out), "-"], capture_output=True, text=True
+    ).stdout
+    assert text.strip() == ""

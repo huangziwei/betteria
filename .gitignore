@@ -32,4 +32,9 @@ books/
 .claude/labbook
 .claude/commands/wordlist.md
 .hf-cache
+<<<<<<< HEAD
 projects/
+=======
+
+.claude
+>>>>>>> 9b98e1b41a72b3a672ad3307af14f611ae7e7d56

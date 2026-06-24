@@ -4,7 +4,7 @@ A command-line pipeline for converting scanned PDFs to EPUB.
 
 ```
 enhance ──── ocr ──── proofread ──── merge
-PDF→PNG     PNG→TXT   TXT→chapters   →EPUB/PDF
+PDF→PNG     PNG→TXT   TXT→chapters   →EPUB + searchable PDF
 ```
 
 ## Prerequisites
@@ -13,8 +13,13 @@ Apple Silicon only (the OCR step runs locally via [mlx-vlm](https://github.com/B
 
 ```bash
 brew install poppler    # provides pdftocairo / pdftoppm for rasterizing
+brew install tesseract  # word positions for the searchable PDF text layer
 brew install uv         # Python package manager
 ```
+
+For the searchable PDF, install the Tesseract language packs you need
+(`tesseract-lang` covers all; it includes `jpn`/`jpn_vert` for vertical
+Japanese). Without Tesseract, `merge` still builds a plain image-only PDF.
 
 ## Installation
 
@@ -60,10 +65,22 @@ Runs a local VLM on the enhanced PNGs to produce per-page `.txt` files.
 
 ### `betteria merge <book-dir>`
 
-Combines proofread text and enhanced images into final outputs.
+Combines proofread text and enhanced images into final outputs. The PDF is a
+*searchable* sandwich: the enhanced image stays the visible layer, with the
+proofread (corrected) text added as an invisible, selectable layer behind it.
+Positions come from a Tesseract pass on each image, aligned to the proofread
+text so the *corrected* words are what get embedded — Latin scripts align word
+by word, CJK character by character (vertical Japanese included, via a
+vertical-CMap font so readers extract columns in the right order).
 
 - `--title` / `--author` — override metadata
 - `--epub-only` / `--pdf-only` — generate only one format
+- `--no-pdf-text` — skip the text layer; build an image-only PDF
+- `--pdf-text-horizontal` — treat CJK as horizontal (default: vertical for Japanese)
+
+The text layer's language comes from `metadata.json` (`"language"`), falling
+back to English. If a page has no proofread text yet, its raw OCR `.txt` is
+used so the PDF is still fully searchable.
 
 ---
 

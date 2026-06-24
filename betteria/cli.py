@@ -496,10 +496,354 @@ def _whiten_task(
     )
 
 
+# ── Searchable-PDF text layer ────────────────────────────────────────
+#
+# The enhanced PDF is a stack of page images with no text.  To make it
+# searchable we slip an *invisible* text layer (PDF text-rendering mode 3)
+# over each image, carrying the proofread (corrected) words.  The proofread
+# files are reflowed and have no coordinates, so positions come from a fresh
+# Tesseract pass on the same image: align the raw OCR tokens to the proofread
+# tokens, then place each *corrected* token at the matching OCR box.  Latin
+# scripts align word-by-word; CJK has no word spaces, so it aligns character
+# by character — Tesseract's per-glyph boxes already make that 1:1, and each
+# glyph is positioned absolutely, so vertical text needs no layout engine.
+
+# BCP-47 (metadata.json "language") → Tesseract language code.
+_TESSERACT_LANG = {
+    "en": "eng", "fr": "fra", "de": "deu", "es": "spa", "it": "ita",
+    "pt": "por", "nl": "nld", "la": "lat", "ru": "rus",
+    "ja": "jpn", "zh": "chi_sim", "ko": "kor",
+}
+
+# Scripts written without spaces between words → align per character.
+_CJK_LANGS = frozenset({"ja", "zh", "ko"})
+
+# BCP-47 → a built-in reportlab CID font covering the script, so the invisible
+# layer extracts/searches correctly without shipping a TTF.
+_CID_FONT = {
+    "ja": "HeiseiMin-W3",
+    "zh": "STSong-Light",
+    "ko": "HYSMyeongJo-Medium",
+}
+
+# Vertical (V) CMaps: setting one marks the text as vertical writing mode
+# (WMode 1), so even geometric extractors read columns top-to-bottom,
+# right-to-left.  Input must be UCS-2 (handled by ``_encode_for_font``).
+_CID_VCMAP = {
+    "ja": "UniJIS-UCS2-V",
+    "zh": "UniGB-UCS2-V",
+    "ko": "UniKS-UCS2-V",
+}
+
+
+def _base_lang(lang: str) -> str:
+    """Primary subtag of a BCP-47 code: ``ja-JP`` → ``ja``."""
+    return (lang or "en").split("-")[0].lower()
+
+
+def _tesseract_config(lang: str, vertical: bool) -> tuple[str, int, bool]:
+    """Return ``(tesseract_lang, psm, is_cjk)`` for a BCP-47 language code."""
+    base = _base_lang(lang)
+    cjk = base in _CJK_LANGS
+    tess = _TESSERACT_LANG.get(base, "eng")
+    if cjk and vertical:
+        return f"{tess}_vert", 5, True   # single uniform block, vertical text
+    if cjk:
+        return tess, 6, True             # single uniform block, horizontal text
+    return tess, 3, False                # fully automatic page segmentation
+
+
+def _overlay_font(lang: str, vertical: bool) -> tuple[str, bool]:
+    """Register (once) a reportlab font for ``lang`` and return it.
+
+    Returns ``(font_name, needs_ucs2)``.  ``needs_ucs2`` is True for the
+    vertical CID fonts, whose CMaps consume UCS-2 rather than Python ``str``.
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    base = _base_lang(lang)
+    face = _CID_FONT.get(base)
+    if face is None:
+        return "Helvetica", False
+    if vertical:
+        name = f"{face}-{_CID_VCMAP[base]}"
+        try:
+            pdfmetrics.getFont(name)
+        except KeyError:
+            from reportlab.pdfbase.cidfonts import CIDFont
+            pdfmetrics.registerFont(CIDFont(face, _CID_VCMAP[base]))
+        return name, True
+    try:
+        pdfmetrics.getFont(face)
+    except KeyError:
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        pdfmetrics.registerFont(UnicodeCIDFont(face))
+    return face, False
+
+
+_MD_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_MD_INLINE_RE = re.compile(r"[*_`#>]")
+
+
+def _markdown_to_plaintext(text: str) -> str:
+    """Strip Markdown, boundary markers, and sentinels from a proofread page.
+
+    Proofread files carry Markdown (headings, emphasis, blockquotes),
+    ``<!--JOIN-->``/``<!--PARA-->`` boundary markers, and the occasional
+    ``[BLANK PAGE]`` sentinel.  None of that belongs in a layer whose only
+    job is to make the printed words searchable and copyable.
+    """
+    text = _MD_COMMENT_RE.sub(" ", text)
+    kept = [
+        line for line in text.splitlines()
+        if line.strip() not in {"[BLANK PAGE]", "---"}
+    ]
+    return _MD_INLINE_RE.sub("", "\n".join(kept))
+
+
+def _proofread_units(text: str, cjk: bool) -> list[str]:
+    """Split plaintext into alignment units: words (Latin) or chars (CJK)."""
+    plain = _markdown_to_plaintext(text)
+    if cjk:
+        return [ch for ch in plain if not ch.isspace()]
+    return plain.split()
+
+
+def _normalize_unit(unit: str, cjk: bool) -> str:
+    """Fold a unit for fuzzy matching without altering what gets placed."""
+    if cjk:
+        return unit
+    folded = unit.lower().replace("’", "'").replace("‘", "'")
+    return folded.strip("“”\"'.,;:!?()[]{}—–-…")
+
+
+def _tesseract_tokens(
+    image_path: Path, lang: str, psm: int, vertical: bool, split_chars: bool
+) -> list[dict]:
+    """Run Tesseract and return word/char boxes in image-pixel coordinates.
+
+    Each token is ``{"text", "x", "y", "w", "h"}``.  For CJK most tokens are
+    already single glyphs; any multi-glyph token is split into equal cells
+    along the reading axis so alignment stays 1:1 with proofread characters.
+    """
+    try:
+        proc = subprocess.run(
+            ["tesseract", str(image_path), "stdout",
+             "-l", lang, "--psm", str(psm), "tsv"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return []
+    tokens: list[dict] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 12 or parts[0] != "5":   # level 5 == word
+            continue
+        word = parts[11].strip()
+        if not word:
+            continue
+        col = (parts[2], parts[3], parts[4])      # block, paragraph, line
+        x, y, w, h = int(parts[6]), int(parts[7]), int(parts[8]), int(parts[9])
+        chars = list(word)
+        if not split_chars or len(chars) == 1:
+            tokens.append({"text": word, "x": x, "y": y, "w": w, "h": h,
+                           "col": col})
+            continue
+        n = len(chars)
+        if vertical:
+            cell = h / n
+            for k, ch in enumerate(chars):
+                tokens.append({"text": ch, "x": x, "y": y + round(k * cell),
+                               "w": w, "h": max(1, round(cell)), "col": col})
+        else:
+            cell = w / n
+            for k, ch in enumerate(chars):
+                tokens.append({"text": ch, "x": x + round(k * cell), "y": y,
+                               "w": max(1, round(cell)), "h": h, "col": col})
+    return tokens
+
+
+def _distribute_units(
+    boxes: list[dict], units: list[str]
+) -> list[tuple[dict, str]]:
+    """Spread ``units`` across the span of ``boxes`` (for replace blocks)."""
+    if not boxes:
+        return []
+    if len(boxes) == len(units):
+        return list(zip(boxes, units))
+    x0 = min(b["x"] for b in boxes)
+    x1 = max(b["x"] + b["w"] for b in boxes)
+    y0 = min(b["y"] for b in boxes)
+    y1 = max(b["y"] + b["h"] for b in boxes)
+    col = boxes[0].get("col")
+    n = max(1, len(units))
+    placed: list[tuple[dict, str]] = []
+    if (y1 - y0) >= (x1 - x0):          # vertical run of glyphs
+        cell = (y1 - y0) / n
+        for k, u in enumerate(units):
+            placed.append(({"x": x0, "y": y0 + round(k * cell),
+                            "w": x1 - x0, "h": max(1, round(cell)),
+                            "col": col}, u))
+    else:                                # horizontal run
+        cell = (x1 - x0) / n
+        for k, u in enumerate(units):
+            placed.append(({"x": x0 + round(k * cell), "y": y0,
+                            "w": max(1, round(cell)), "h": y1 - y0,
+                            "col": col}, u))
+    return placed
+
+
+def _align_tokens(
+    ocr_tokens: list[dict], units: list[str], cjk: bool
+) -> list[tuple[dict, str]]:
+    """Align OCR boxes to proofread units, carrying corrected text onto boxes.
+
+    OCR-only runs (running headers, page numbers, furigana, noise) are
+    dropped; proofread-only runs (text Tesseract missed) are anchored to the
+    neighbouring box so they stay searchable.
+    """
+    import difflib
+
+    ocr_norm = [_normalize_unit(t["text"], cjk) for t in ocr_tokens]
+    unit_norm = [_normalize_unit(u, cjk) for u in units]
+    matcher = difflib.SequenceMatcher(None, ocr_norm, unit_norm, autojunk=False)
+    placed: list[tuple[dict, str]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                placed.append((ocr_tokens[i1 + k], units[j1 + k]))
+        elif tag == "replace":
+            placed.extend(_distribute_units(ocr_tokens[i1:i2], units[j1:j2]))
+        elif tag == "insert":
+            anchor = placed[-1][0] if placed else (
+                ocr_tokens[i1] if i1 < len(ocr_tokens) else None)
+            if anchor is not None:
+                placed.extend((anchor, u) for u in units[j1:j2])
+        # tag == "delete": OCR-only → drop
+    return placed
+
+
+def _render_text_layer(
+    page_w_pt: float, page_h_pt: float,
+    img_w_px: int, img_h_px: int,
+    placed: list[tuple[dict, str]],
+    font_name: str, needs_ucs2: bool, vertical: bool,
+) -> bytes:
+    """Render placed units as an invisible single-page overlay PDF.
+
+    Glyphs use text-rendering mode 3 (invisible but selectable/searchable).
+    Horizontal text is width-fitted to its box via horizontal scaling; vertical
+    text is placed glyph-by-glyph down each column using a vertical-CMap font.
+    """
+    import statistics
+    from io import BytesIO
+
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
+
+    sx = page_w_pt / img_w_px
+    sy = page_h_pt / img_h_px
+    buf = BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=(page_w_pt, page_h_pt))
+
+    def emit(tobj: object, text: str) -> None:
+        tobj.textOut(text.encode("utf-16-be").decode("latin-1") if needs_ucs2 else text)
+
+    if vertical:
+        for boxes, text in _group_columns(placed):
+            size = max(statistics.median(b["h"] for b in boxes) * sy, 1.0)
+            cx = statistics.median(b["x"] + b["w"] / 2.0 for b in boxes) * sx
+            y_top = page_h_pt - min(b["y"] for b in boxes) * sy
+            tobj = pdf.beginText()
+            tobj.setTextRenderMode(3)
+            tobj.setFont(font_name, size)
+            tobj.setTextOrigin(cx, y_top)
+            emit(tobj, text)
+            pdf.drawText(tobj)
+    else:
+        for box, text in placed:
+            if not text:
+                continue
+            size = max(box["h"] * sy, 1.0)
+            natural = stringWidth(text, font_name, size) or size
+            target = max(box["w"] * sx, 1.0)
+            tobj = pdf.beginText()
+            tobj.setTextRenderMode(3)
+            tobj.setFont(font_name, size)
+            tobj.setHorizScale(max(10.0, min((target / natural) * 100.0, 1000.0)))
+            tobj.setTextOrigin(
+                box["x"] * sx, page_h_pt - (box["y"] + box["h"]) * sy
+            )
+            emit(tobj, text)
+            pdf.drawText(tobj)
+
+    pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+def _group_columns(
+    placed: list[tuple[dict, str]],
+) -> list[tuple[list[dict], str]]:
+    """Group consecutive placed glyphs into columns (by Tesseract line id).
+
+    ``placed`` is already in reading order, so each column's glyphs are
+    contiguous.  Emitting one text run per column keeps geometric extractors
+    from interleaving adjacent columns of vertical text.
+    """
+    runs: list[tuple[list[dict], list[str]]] = []
+    prev = object()
+    for box, ch in placed:
+        if not ch:
+            continue
+        col = box.get("col")
+        if not runs or col is None or col != prev:
+            runs.append(([box], [ch]))
+        else:
+            runs[-1][0].append(box)
+            runs[-1][1].append(ch)
+        prev = col
+    return [(boxes, "".join(chars)) for boxes, chars in runs]
+
+
+def _page_text_for(png_path: Path, artifacts_dir: Path) -> str:
+    """Best proofread text for a page image (proofread > raw OCR; spreads joined)."""
+    stem = png_path.stem
+    halves: list[str] = []
+    for side in ("L", "R"):
+        proof = artifacts_dir / f"{stem}-{side}.proofread.txt"
+        raw = artifacts_dir / f"{stem}-{side}.txt"
+        if proof.exists():
+            halves.append(proof.read_text(encoding="utf-8"))
+        elif raw.exists():
+            halves.append(raw.read_text(encoding="utf-8"))
+    if halves:
+        return "\n\n".join(halves)
+    proof = artifacts_dir / f"{stem}.proofread.txt"
+    if proof.exists():
+        return proof.read_text(encoding="utf-8")
+    raw = artifacts_dir / f"{stem}.txt"
+    if raw.exists():
+        return raw.read_text(encoding="utf-8")
+    return ""
+
+
 def convert_images_to_pdf(
-    image_paths: Sequence[Path | str], output_pdf: Path | str
+    image_paths: Sequence[Path | str],
+    output_pdf: Path | str,
+    page_texts: Sequence[str] | None = None,
+    lang: str = "en",
+    vertical: bool = False,
+    jobs: int = 0,
+    show_progress: bool = False,
 ) -> None:
-    """Combine images into a single PDF via img2pdf."""
+    """Combine images into a single PDF via img2pdf.
+
+    When ``page_texts`` is given (one entry per image, in order), an invisible
+    searchable text layer is built for each page by aligning the proofread
+    text to a fresh Tesseract pass on the image.  Without it, or if Tesseract
+    is unavailable, the result is the plain image-only PDF as before.
+    """
     paths: list[str] = [str(Path(path)) for path in image_paths]
     if not paths:
         raise ValueError("No image files supplied; cannot build PDF")
@@ -507,8 +851,73 @@ def convert_images_to_pdf(
     output = Path(output_pdf)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    with output.open("wb") as file:
-        file.write(img2pdf.convert(paths))
+    pdf_bytes = img2pdf.convert(paths)
+
+    texts = list(page_texts or [])
+    want_text = any((t or "").strip() for t in texts)
+    if not want_text or shutil.which("tesseract") is None:
+        output.write_bytes(pdf_bytes)
+        return
+
+    from io import BytesIO
+
+    import pikepdf
+
+    tess_lang, psm, cjk = _tesseract_config(lang, vertical)
+    font_name, needs_ucs2 = _overlay_font(lang, vertical)
+
+    pdf = pikepdf.open(BytesIO(pdf_bytes))
+    n_pages = len(pdf.pages)
+
+    # Page geometry: points from the PDF, pixels from the source image.
+    geom: list[tuple[float, float, int, int]] = []
+    for idx, page in enumerate(pdf.pages):
+        mbox = page.mediabox
+        w_pt = float(mbox[2]) - float(mbox[0])
+        h_pt = float(mbox[3]) - float(mbox[1])
+        with Image.open(paths[idx]) as img:
+            img_w, img_h = img.size
+        geom.append((w_pt, h_pt, img_w, img_h))
+
+    def _overlay_for(idx: int) -> tuple[int, bytes | None]:
+        text = texts[idx] if idx < len(texts) else ""
+        if not text or not text.strip():
+            return idx, None
+        ocr = _tesseract_tokens(Path(paths[idx]), tess_lang, psm, vertical, cjk)
+        units = _proofread_units(text, cjk)
+        if not ocr or not units:
+            return idx, None
+        placed = _align_tokens(ocr, units, cjk)
+        if not placed:
+            return idx, None
+        w_pt, h_pt, img_w, img_h = geom[idx]
+        return idx, _render_text_layer(
+            w_pt, h_pt, img_w, img_h, placed, font_name, needs_ucs2, vertical
+        )
+
+    worker_target = jobs or _available_cpu_count()
+    overlays: dict[int, bytes] = {}
+    with _progress(n_pages, "Embedding text layer", show_progress) as (
+        bar,
+        task_id,
+    ):
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=worker_target
+        ) as executor:
+            futures = {
+                executor.submit(_overlay_for, idx): idx for idx in range(n_pages)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                idx, data = future.result()
+                if data is not None:
+                    overlays[idx] = data
+                bar.advance(task_id, 1)
+
+    for idx, data in overlays.items():
+        overlay = pikepdf.open(BytesIO(data))
+        pdf.pages[idx].add_overlay(overlay.pages[0])
+
+    pdf.save(str(output))
 
 
 # ── Subcommand: enhance ──────────────────────────────────────────────
@@ -1279,6 +1688,8 @@ def cmd_merge(
     author: str | None = None,
     epub_only: bool = False,
     pdf_only: bool = False,
+    embed_text: bool = True,
+    horizontal_text: bool = False,
     show_progress: bool = True,
 ) -> tuple[Path | None, Path | None]:
     """Build EPUB from proofread chapters and/or enhanced PDF from PNGs.
@@ -1590,7 +2001,35 @@ def cmd_merge(
         if pngs_dir.is_dir():
             png_paths = sorted(pngs_dir.glob("*.png"), key=_page_sort_key)
             if png_paths:
-                convert_images_to_pdf(png_paths, pdf_path)
+                page_texts = None
+                pdf_lang = "en"
+                pdf_vertical = False
+                if embed_text:
+                    if metadata_path.exists():
+                        try:
+                            meta_pdf = json.loads(
+                                metadata_path.read_text(encoding="utf-8")
+                            )
+                            pdf_lang = meta_pdf.get("language") or "en"
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                    pdf_vertical = (
+                        _base_lang(pdf_lang) == "ja" and not horizontal_text
+                    )
+                    page_texts = [_page_text_for(p, pngs_dir) for p in png_paths]
+                    if shutil.which("tesseract") is None:
+                        console.print(
+                            "[yellow]tesseract not found; building image-only PDF "
+                            "without a searchable text layer.[/yellow]"
+                        )
+                convert_images_to_pdf(
+                    png_paths,
+                    pdf_path,
+                    page_texts=page_texts,
+                    lang=pdf_lang,
+                    vertical=pdf_vertical,
+                    show_progress=show_progress,
+                )
                 pdf_out = pdf_path
             else:
                 console.print(
@@ -1790,6 +2229,18 @@ def main():
         help="Only generate PDF (skip EPUB)",
     )
     p_merge.add_argument(
+        "--no-pdf-text",
+        dest="embed_text",
+        action="store_false",
+        help="Skip the searchable text layer; build an image-only PDF",
+    )
+    p_merge.add_argument(
+        "--pdf-text-horizontal",
+        dest="horizontal_text",
+        action="store_true",
+        help="Treat CJK text as horizontal (default: vertical for Japanese)",
+    )
+    p_merge.add_argument(
         "--quiet",
         action="store_true",
         help="Disable progress bars",
@@ -1847,6 +2298,8 @@ def main():
             author=args.author,
             epub_only=args.epub_only,
             pdf_only=args.pdf_only,
+            embed_text=args.embed_text,
+            horizontal_text=args.horizontal_text,
             show_progress=not args.quiet,
         )
         if epub_out:
