@@ -498,6 +498,68 @@ def test_cmd_extract_produces_pngs_and_txt(monkeypatch, tmp_path):
     assert [c[0] for c in extract_calls] == [1, 2]
 
 
+def test_extract_text_page_skips_pages_without_text(monkeypatch, tmp_path):
+    """A page whose pdftotext output is only a form feed writes no .txt file."""
+    pdf_path = tmp_path / "doc.original.pdf"
+    pdf_path.write_bytes(b"%PDF")
+    txt_path = tmp_path / "page-1.txt"
+
+    def fake_run(cmd, stdout, stderr, check):
+        assert cmd[0] == "pdftotext"
+        # Poppler emits a lone form feed for a page with no embedded text.
+        return CompletedProcess(cmd, 0, stdout=b"\x0c", stderr=b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    wrote = cli._extract_text_page(pdf_path, 1, txt_path)
+
+    assert wrote is False
+    assert not txt_path.exists()
+
+
+def test_extract_text_page_writes_pages_with_text(monkeypatch, tmp_path):
+    """A page with embedded text writes the .txt file verbatim and returns True."""
+    pdf_path = tmp_path / "doc.original.pdf"
+    pdf_path.write_bytes(b"%PDF")
+    txt_path = tmp_path / "page-1.txt"
+
+    def fake_run(cmd, stdout, stderr, check):
+        return CompletedProcess(cmd, 0, stdout=b"Real page text.\n\x0c", stderr=b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    wrote = cli._extract_text_page(pdf_path, 1, txt_path)
+
+    assert wrote is True
+    assert txt_path.read_text(encoding="utf-8") == "Real page text.\n\x0c"
+
+
+def test_cmd_extract_image_only_pdf_writes_no_txt(monkeypatch, tmp_path):
+    """An image-only PDF yields page PNGs but no .txt files at all."""
+    input_pdf = tmp_path / "scan.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(pdf_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        pages = [out_dir / "page-1.png", out_dir / "page-2.png"]
+        for p in pages:
+            p.write_bytes(b"PNG")
+        return pages
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        # Simulate a scanned page with no embedded text: nothing written.
+        return False
+
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    book_dir = cli.cmd_extract(input_pdf=input_pdf, show_progress=False, jobs=1)
+
+    artifacts_dir = book_dir / "artifacts"
+    assert (artifacts_dir / "page-1.png").exists()
+    assert (artifacts_dir / "page-2.png").exists()
+    assert not list(artifacts_dir.glob("*.txt"))
+
+
 def test_cmd_extract_caps_long_side(monkeypatch, tmp_path):
     """Effective DPI is reduced so the rendered long side stays <= max_long_side."""
     input_pdf = tmp_path / "doc.pdf"

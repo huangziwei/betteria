@@ -1084,8 +1084,16 @@ def cmd_enhance(
 
 def _extract_text_page(
     pdf_path: Path, page: int, txt_path: Path
-) -> None:
-    """Extract embedded text from a single PDF page via ``pdftotext``."""
+) -> bool:
+    """Extract embedded text from a single PDF page via ``pdftotext``.
+
+    Returns ``True`` when the page carried embedded text and a ``.txt`` file
+    was written, ``False`` when it had none.  A page with no text layer (e.g.
+    a scanned/image-only PDF) yields only a form-feed from ``pdftotext``; in
+    that case no file is written, so the artifacts dir isn't littered with
+    empty ``.txt`` files and a later ``ocr`` run isn't blocked (``ocr`` skips
+    pages that already have a ``.txt``).
+    """
     try:
         result = subprocess.run(
             ["pdftotext", "-f", str(page), "-l", str(page), str(pdf_path), "-"],
@@ -1102,7 +1110,12 @@ def _extract_text_page(
             f"Error running pdftotext for page {page}: {e.stderr.decode().strip()}"
         )
 
-    txt_path.write_text(result.stdout.decode("utf-8"), encoding="utf-8")
+    text = result.stdout.decode("utf-8")
+    if not text.strip():  # form-feed / whitespace only → no embedded text
+        return False
+
+    txt_path.write_text(text, encoding="utf-8")
+    return True
 
 
 def cmd_extract(
@@ -1188,15 +1201,31 @@ def cmd_extract(
         tmp.rename(final)
         final_paths.append(final)
 
-    # Extract embedded text per page (slot's source PDF page is order[slot] + 1)
+    # Extract embedded text per page (slot's source PDF page is order[slot] + 1).
+    # Pages with no embedded text produce no .txt file (see _extract_text_page).
+    pages_with_text = 0
     with _progress(total_pages, "Extracting text", show_progress) as (
         progress,
         task_id,
     ):
         for slot, png_path in enumerate(final_paths):
             txt_path = png_path.with_suffix(".txt")
-            _extract_text_page(original_copy, order[slot] + 1, txt_path)
+            if _extract_text_page(original_copy, order[slot] + 1, txt_path):
+                pages_with_text += 1
             progress.advance(task_id, 1)
+
+    if show_progress:
+        console = Console(stderr=True)
+        if pages_with_text == 0:
+            console.print(
+                "[yellow]No embedded text found; wrote page images only. "
+                "Run `betteria ocr` to generate text.[/yellow]"
+            )
+        elif pages_with_text < total_pages:
+            console.print(
+                f"[dim]{total_pages - pages_with_text} of {total_pages} pages had "
+                "no embedded text (left for a later `ocr` pass).[/dim]"
+            )
 
     return book_dir
 
