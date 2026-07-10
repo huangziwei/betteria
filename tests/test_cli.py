@@ -162,6 +162,7 @@ def test_cmd_enhance_coordinates_pipeline(monkeypatch, tmp_path):
         whiten_calls.append((Path(png_path), out_path, kwargs))
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -220,6 +221,7 @@ def test_cmd_enhance_output_dir_name(monkeypatch, tmp_path):
         Path(out_path).write_bytes(b"PNG-enhanced")
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -260,6 +262,7 @@ def test_cmd_enhance_skips_existing_pages(monkeypatch, tmp_path):
         whiten_calls.append((Path(png_path), Path(out_path)))
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -297,6 +300,7 @@ def test_cmd_enhance_skips_all_when_complete(monkeypatch, tmp_path):
         return []
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
 
     result = cli.cmd_enhance(
@@ -348,6 +352,7 @@ def test_cmd_enhance_ppd_rtl_reorders(monkeypatch, tmp_path):
         mapping[Path(out_path).name] = Path(png_path).name
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -377,6 +382,7 @@ def test_cmd_enhance_ltr_writes_no_order_file(monkeypatch, tmp_path):
         Path(out_path).write_bytes(b"PNG-enhanced")
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -405,6 +411,7 @@ def test_cmd_enhance_resume_reuses_saved_order(monkeypatch, tmp_path):
         mapping[Path(out_path).name] = Path(png_path).name
 
     monkeypatch.setattr(cli, "get_page_count", lambda _: 4)
+    monkeypatch.setattr(cli, "_extract_text_page", lambda *a, **k: False)
     monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
     monkeypatch.setattr(cli, "whiten_and_save", fake_whiten)
 
@@ -815,7 +822,7 @@ def test_cmd_ocr_produces_per_page_txt(monkeypatch, tmp_path):
         "page-3.png": "Chapter 2: Methods\nDetails about methods.",
     }
 
-    def fake_ocr_page(image_path, backend="mlx", model=None):
+    def fake_ocr_page(image_path, backend="mlx", model=None, **kwargs):
         return ocr_texts[image_path.name]
 
     def fake_load_ocr_model_mlx(model_path):
@@ -849,7 +856,7 @@ def test_cmd_ocr_skips_existing_txt(monkeypatch, tmp_path):
 
     ocr_called_for: list[str] = []
 
-    def fake_ocr_page(image_path, backend="mlx", model=None):
+    def fake_ocr_page(image_path, backend="mlx", model=None, **kwargs):
         ocr_called_for.append(image_path.name)
         return "New OCR text for page 2."
 
@@ -1463,3 +1470,280 @@ def test_cmd_merge_image_only_pdf_has_no_text(monkeypatch, tmp_path):
         ["pdftotext", str(pdf_out), "-"], capture_output=True, text=True
     ).stdout
     assert text.strip() == ""
+
+
+# ── enhance: embedded-text extraction (parity with extract) ───────────
+
+
+def test_cmd_enhance_extracts_embedded_text(monkeypatch, tmp_path):
+    """enhance pulls the source PDF's embedded text into per-page .txt files."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        pages = [out_dir / "page_1.png", out_dir / "page_2.png"]
+        for page in pages:
+            page.write_bytes(b"PNG")
+        return pages
+
+    extract_calls: list[int] = []
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        extract_calls.append(page)
+        txt_path.write_text(f"Text {page}.", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(
+        cli, "whiten_and_save", lambda p, o, **k: Path(o).write_bytes(b"E")
+    )
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    book_dir = cli.cmd_enhance(input_pdf=input_pdf, show_progress=False, jobs=1)
+
+    artifacts = book_dir / "artifacts"
+    assert (artifacts / "page-1.txt").read_text(encoding="utf-8") == "Text 1."
+    assert (artifacts / "page-2.txt").read_text(encoding="utf-8") == "Text 2."
+    assert extract_calls == [1, 2]
+
+
+def test_cmd_enhance_no_text_skips_extraction(monkeypatch, tmp_path):
+    """extract_text=False (--no-text) skips embedded-text extraction entirely."""
+    input_pdf = tmp_path / "doc.pdf"
+    input_pdf.write_bytes(b"%PDF")
+
+    def fake_pdf_to_images(input_path, dpi, out_dir, show_progress, jobs, rasterizer):
+        page = out_dir / "page_1.png"
+        page.write_bytes(b"PNG")
+        return [page]
+
+    called = False
+
+    def fake_extract_text_page(*a, **k):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 1)
+    monkeypatch.setattr(cli, "pdf_to_images", fake_pdf_to_images)
+    monkeypatch.setattr(
+        cli, "whiten_and_save", lambda p, o, **k: Path(o).write_bytes(b"E")
+    )
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    book_dir = cli.cmd_enhance(
+        input_pdf=input_pdf, show_progress=False, jobs=1, extract_text=False
+    )
+
+    assert called is False
+    assert not (book_dir / "artifacts" / "page-1.txt").exists()
+
+
+def test_cmd_enhance_text_pass_preserves_existing_txt(monkeypatch, tmp_path):
+    """The text pass runs even when all PNGs exist, and never clobbers a .txt."""
+    book_dir = tmp_path / "doc"
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (book_dir / "doc.original.pdf").write_bytes(b"%PDF")
+    # Both pages already enhanced; page 1 also has hand-edited text.
+    (artifacts / "page-1.png").write_bytes(b"PNG")
+    (artifacts / "page-1.txt").write_text("hand edited", encoding="utf-8")
+    (artifacts / "page-2.png").write_bytes(b"PNG")
+
+    def fake_extract_text_page(pdf_path, page, txt_path):
+        txt_path.write_text(f"embedded {page}", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(cli, "get_page_count", lambda _: 2)
+    monkeypatch.setattr(cli, "_extract_text_page", fake_extract_text_page)
+
+    cli.cmd_enhance(input_pdf=book_dir, show_progress=False, jobs=1)
+
+    # page 1's existing text is preserved; page 2 gets fresh embedded text.
+    assert (artifacts / "page-1.txt").read_text(encoding="utf-8") == "hand edited"
+    assert (artifacts / "page-2.txt").read_text(encoding="utf-8") == "embedded 2"
+
+
+# ── ocr: override, backends, language ─────────────────────────────────
+
+
+def test_cmd_ocr_override_reocrs_existing(monkeypatch, tmp_path):
+    """--override re-OCRs pages that already have text, overwriting it."""
+    book_dir = tmp_path / "book"
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "page-1.png").write_bytes(b"PNG1")
+    (artifacts / "page-1.txt").write_text("embedded text", encoding="utf-8")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(cli, "_ocr_page", lambda image_path, **kw: "fresh OCR text")
+
+    cli.cmd_ocr(
+        input_dir=book_dir, backend="tesseract", override=True, show_progress=False
+    )
+
+    assert (artifacts / "page-1.txt").read_text(encoding="utf-8") == "fresh OCR text"
+
+
+def test_cmd_ocr_tesseract_backend_passes_lang_and_vertical(monkeypatch, tmp_path):
+    """The tesseract backend threads lang/vertical into _ocr_page (no mlx needed)."""
+    book_dir = tmp_path / "book"
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "page-1.png").write_bytes(b"PNG1")
+
+    calls: list[tuple] = []
+
+    def fake_ocr_page(image_path, backend="mlx", model=None, lang="en", vertical=False):
+        calls.append((backend, lang, vertical))
+        return "text"
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(cli, "_ocr_page", fake_ocr_page)
+
+    cli.cmd_ocr(
+        input_dir=book_dir,
+        backend="tesseract",
+        lang="ja",
+        vertical=True,
+        show_progress=False,
+    )
+
+    assert (artifacts / "page-1.txt").read_text(encoding="utf-8") == "text"
+    assert calls == [("tesseract", "ja", True)]
+
+
+def test_cmd_ocr_tesseract_lang_defaults_from_metadata(monkeypatch, tmp_path):
+    """With no --lang, the tesseract backend reads metadata.json's language."""
+    book_dir = tmp_path / "book"
+    artifacts = book_dir / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "page-1.png").write_bytes(b"PNG1")
+    (book_dir / "metadata.json").write_text(
+        json.dumps({"language": "de"}), encoding="utf-8"
+    )
+
+    calls: list[dict] = []
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(
+        cli, "_ocr_page", lambda image_path, **kw: calls.append(kw) or "t"
+    )
+
+    cli.cmd_ocr(input_dir=book_dir, backend="tesseract", show_progress=False)
+
+    assert calls[0]["lang"] == "de"
+
+
+def test_ocr_page_tesseract_builds_command(monkeypatch, tmp_path):
+    """_ocr_page_tesseract shells out with the right lang/psm and returns stdout."""
+    img = tmp_path / "page-1.png"
+    img.write_bytes(b"PNG")
+
+    captured: dict = {}
+
+    def fake_run(cmd, capture_output, text, check):
+        captured["cmd"] = cmd
+        return CompletedProcess(cmd, 0, stdout="page text", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    out = cli._ocr_page_tesseract(img, lang="ja", vertical=True)
+
+    assert out == "page text"
+    cmd = captured["cmd"]
+    assert cmd[0] == "tesseract"
+    # Vertical Japanese → jpn_vert model with psm 5.
+    assert cmd[cmd.index("-l") + 1] == "jpn_vert"
+    assert cmd[cmd.index("--psm") + 1] == "5"
+
+
+def test_ocr_page_dispatches_to_backend(monkeypatch, tmp_path):
+    img = tmp_path / "p.png"
+    monkeypatch.setattr(
+        cli, "_ocr_page_tesseract", lambda image, lang, vertical: f"T:{lang}:{vertical}"
+    )
+    monkeypatch.setattr(cli, "_ocr_page_mlx", lambda image, model: "M")
+
+    assert cli._ocr_page(img, backend="tesseract", lang="de") == "T:de:False"
+    assert cli._ocr_page(img, backend="mlx") == "M"
+    with pytest.raises(ValueError):
+        cli._ocr_page(img, backend="nope")
+
+
+def test_resolve_ocr_backend(monkeypatch):
+    assert cli._resolve_ocr_backend("mlx") == "mlx"
+    assert cli._resolve_ocr_backend("tesseract") == "tesseract"
+    monkeypatch.setattr(cli.platform, "machine", lambda: "arm64")
+    assert cli._resolve_ocr_backend("auto") == "mlx"
+    monkeypatch.setattr(cli.platform, "machine", lambda: "x86_64")
+    assert cli._resolve_ocr_backend("auto") == "tesseract"
+
+
+def test_read_book_language(tmp_path):
+    assert cli._read_book_language(tmp_path) is None
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"language": "ja"}), encoding="utf-8"
+    )
+    assert cli._read_book_language(tmp_path) == "ja"
+    # A metadata.json without a language key falls back to None.
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"title": "X"}), encoding="utf-8"
+    )
+    assert cli._read_book_language(tmp_path) is None
+
+
+def test_main_ocr_passes_new_flags(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli, "cmd_ocr", lambda **kw: captured.update(kw) or Path("/x")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "betteria", "ocr", "book/",
+            "--backend", "tesseract",
+            "--lang", "ja",
+            "--vertical",
+            "--override",
+        ],
+    )
+    cli.main()
+    assert captured["backend"] == "tesseract"
+    assert captured["lang"] == "ja"
+    assert captured["vertical"] is True
+    assert captured["override"] is True
+
+
+def test_main_ocr_defaults(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli, "cmd_ocr", lambda **kw: captured.update(kw) or Path("/x")
+    )
+    monkeypatch.setattr(sys, "argv", ["betteria", "ocr", "book/"])
+    cli.main()
+    assert captured["backend"] == "auto"
+    assert captured["lang"] is None
+    assert captured["vertical"] is False
+    assert captured["override"] is False
+
+
+def test_main_enhance_no_text(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli, "cmd_enhance", lambda **kw: captured.update(kw) or Path("/x")
+    )
+    monkeypatch.setattr(sys, "argv", ["betteria", "enhance", "book.pdf", "--no-text"])
+    cli.main()
+    assert captured["extract_text"] is False
+
+
+def test_main_enhance_extract_text_default(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli, "cmd_enhance", lambda **kw: captured.update(kw) or Path("/x")
+    )
+    monkeypatch.setattr(sys, "argv", ["betteria", "enhance", "book.pdf"])
+    cli.main()
+    assert captured["extract_text"] is True

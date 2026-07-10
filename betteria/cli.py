@@ -6,6 +6,7 @@ import contextlib
 import html as html_mod
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -935,12 +936,19 @@ def cmd_enhance(
     jobs: int = 0,
     rasterizer: Rasterizer = "pdftocairo",
     ppd: str = "ltr",
+    extract_text: bool = True,
 ) -> Path:
     """Rasterize a PDF and save enhanced (whitened) PNGs to ``<stem>/artifacts/``.
 
     Accepts either a PDF file or an existing book directory.  Pages that
     already have an enhanced PNG in ``artifacts/`` are skipped, so the
     command is safe to re-run after interruption.
+
+    When ``extract_text`` is set (the default), any embedded text the source
+    PDF carries is written to per-page ``.txt`` files too, exactly as
+    ``extract`` does — a scanned PDF with no text layer simply yields none.
+    Existing ``.txt`` files are never overwritten; replace poor embedded text
+    with a fresh OCR pass via ``betteria ocr --override``.
     """
     if dpi <= 0:
         raise ValueError("DPI must be a positive integer")
@@ -998,6 +1006,26 @@ def cmd_enhance(
     # Output slot i is filled from source PDF page ``order[i]`` (identity for
     # ``ppd == "ltr"``; a spread de-interleave for ``ppd == "rtl"``).
     order = _resolve_page_order(book_dir, total_pages, ppd, console)
+
+    # Parity with `extract`: pull any text the source PDF already carries into
+    # per-page .txt files.  Runs independently of the PNG work (and before the
+    # "all enhanced" early return) and skips pages that already have a .txt, so
+    # OCR output or hand edits survive a re-run.  A scan with no text layer
+    # yields none; replace poor embedded text with `betteria ocr --override`.
+    if extract_text:
+        pages_with_text = _extract_text_layer(
+            original_copy,
+            enhanced_paths,
+            order,
+            show_progress=show_progress,
+            skip_existing=True,
+        )
+        if pages_with_text and show_progress:
+            console.print(
+                f"[dim]Pulled embedded text from {pages_with_text} of "
+                f"{total_pages} pages; run `ocr --override` to replace it.[/dim]"
+            )
+
     pages_todo = [i for i, ep in enumerate(enhanced_paths) if not ep.exists()]
 
     if not pages_todo:
@@ -1118,6 +1146,38 @@ def _extract_text_page(
     return True
 
 
+def _extract_text_layer(
+    source_pdf: Path,
+    page_paths: Sequence[Path],
+    order: Sequence[int],
+    show_progress: bool = True,
+    skip_existing: bool = False,
+) -> int:
+    """Write the source PDF's embedded text next to each page image.
+
+    ``page_paths[slot]`` is the image rendered from source PDF page
+    ``order[slot] + 1``; its text is written to the sibling ``.txt``.  Pages
+    with no embedded text produce no file (see :func:`_extract_text_page`).
+    With ``skip_existing`` a page that already has a ``.txt`` is left
+    untouched, so OCR output or hand edits survive a re-run.  Returns the
+    number of pages that carried embedded text.
+    """
+    pages_with_text = 0
+    with _progress(len(page_paths), "Extracting text", show_progress) as (
+        progress,
+        task_id,
+    ):
+        for slot, png_path in enumerate(page_paths):
+            txt_path = png_path.with_suffix(".txt")
+            if skip_existing and txt_path.exists():
+                progress.advance(task_id, 1)
+                continue
+            if _extract_text_page(source_pdf, order[slot] + 1, txt_path):
+                pages_with_text += 1
+            progress.advance(task_id, 1)
+    return pages_with_text
+
+
 def cmd_extract(
     input_pdf: Path | str,
     dpi: int = 300,
@@ -1203,16 +1263,9 @@ def cmd_extract(
 
     # Extract embedded text per page (slot's source PDF page is order[slot] + 1).
     # Pages with no embedded text produce no .txt file (see _extract_text_page).
-    pages_with_text = 0
-    with _progress(total_pages, "Extracting text", show_progress) as (
-        progress,
-        task_id,
-    ):
-        for slot, png_path in enumerate(final_paths):
-            txt_path = png_path.with_suffix(".txt")
-            if _extract_text_page(original_copy, order[slot] + 1, txt_path):
-                pages_with_text += 1
-            progress.advance(task_id, 1)
+    pages_with_text = _extract_text_layer(
+        original_copy, final_paths, order, show_progress=show_progress
+    )
 
     if show_progress:
         console = Console(stderr=True)
@@ -1239,6 +1292,33 @@ _DEFAULT_OCR_MODEL = _DEFAULT_OCR_MODEL_MLX
 
 # Module-level cache so the model is loaded once per process.
 _ocr_model_cache: dict[str, object] = {}
+
+
+def _resolve_ocr_backend(backend: str) -> str:
+    """Resolve the ``auto`` OCR backend to a concrete engine for this machine.
+
+    ``mlx`` runs only on Apple Silicon; everywhere else (e.g. Intel Macs)
+    ``auto`` falls back to Tesseract so ``ocr`` still works out of the box.
+    """
+    if backend != "auto":
+        return backend
+    return "mlx" if platform.machine() == "arm64" else "tesseract"
+
+
+def _read_book_language(book_dir: Path) -> str | None:
+    """Return the BCP-47 language from ``metadata.json`` if present, else None.
+
+    ``metadata.json`` is usually written later in the pipeline (proofread), so
+    at OCR time it often does not exist yet; callers then fall back to English.
+    """
+    meta_path = book_dir / "metadata.json"
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return meta.get("language") or None
 
 
 def _load_ocr_model_mlx(model_path: str) -> tuple:
@@ -1291,14 +1371,51 @@ def _ocr_page_mlx(image_path: Path, model_path: str) -> str:
     return result.text
 
 
+def _ocr_page_tesseract(
+    image_path: Path, lang: str = "en", vertical: bool = False
+) -> str:
+    """OCR a single page image via Tesseract (runs anywhere, incl. Intel Macs).
+
+    ``lang`` is a BCP-47 code (e.g. ``ja``); :func:`_tesseract_config` maps it
+    to a Tesseract language and page-segmentation mode, selecting the vertical
+    CJK model (``*_vert``, psm 5) when ``vertical`` is set.
+    """
+    tess_lang, psm, _ = _tesseract_config(lang, vertical)
+    try:
+        proc = subprocess.run(
+            ["tesseract", str(image_path), "stdout",
+             "-l", tess_lang, "--psm", str(psm)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Tesseract not found. Install it (e.g. `brew install tesseract`)."
+        ) from None
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Tesseract failed on {image_path.name}: {e.stderr.strip()}"
+        )
+    return proc.stdout
+
+
 def _ocr_page(
     image_path: Path,
     backend: str = "mlx",
     model: str = _DEFAULT_OCR_MODEL_MLX,
+    lang: str = "en",
+    vertical: bool = False,
 ) -> str:
-    """Dispatch a single-page OCR call to the chosen backend."""
+    """Dispatch a single-page OCR call to the chosen backend.
+
+    ``model`` is used only by the ``mlx`` backend; ``lang`` and ``vertical``
+    only by ``tesseract``.
+    """
     if backend == "mlx":
         return _ocr_page_mlx(image_path, model)
+    if backend == "tesseract":
+        return _ocr_page_tesseract(image_path, lang, vertical)
     raise ValueError(f"Unknown OCR backend: {backend!r}")
 
 
@@ -1409,6 +1526,9 @@ def cmd_ocr(
     input_dir: Path | str,
     backend: str = "mlx",
     model: str | None = None,
+    lang: str | None = None,
+    vertical: bool = False,
+    override: bool = False,
     show_progress: bool = True,
 ) -> Path:
     """OCR enhanced PNGs and save per-page text files.
@@ -1416,11 +1536,23 @@ def cmd_ocr(
     Per-page OCR results are saved as ``.txt`` files next to each PNG
     (e.g. ``page-001.txt``).  Pages that already have a ``.txt`` file are
     skipped, so the command is safe to re-run after partial completion or
-    after manually editing individual page texts.
+    after manually editing individual page texts.  Pass ``override`` to re-OCR
+    every page and overwrite existing text — for instance to replace the
+    embedded text that ``enhance``/``extract`` pulled from the PDF with fresh
+    OCR when the embedded text is poor.
 
-    ``backend`` selects the inference engine. ``mlx`` uses ``mlx-vlm``
-    (Apple Silicon only).
+    ``backend`` selects the inference engine: ``mlx`` uses ``mlx-vlm`` (Apple
+    Silicon only), ``tesseract`` shells out to Tesseract (runs anywhere,
+    including Intel Macs), and ``auto`` picks ``mlx`` on Apple Silicon and
+    ``tesseract`` elsewhere.  The Tesseract backend honours ``lang`` (a BCP-47
+    code, defaulting to the book's ``metadata.json`` language then English) and
+    ``vertical`` for vertical CJK text.
     """
+    input_path = Path(input_dir)
+    if not input_path.is_dir():
+        raise NotADirectoryError(f"Input must be a directory: {input_path}")
+
+    backend = _resolve_ocr_backend(backend)
     if backend == "mlx":
         if model is None:
             model = _DEFAULT_OCR_MODEL_MLX
@@ -1431,28 +1563,31 @@ def cmd_ocr(
                 "The 'ocr' command with --backend mlx requires mlx-vlm.\n"
                 "Install it with: uv sync --extra ocr (Apple Silicon only)"
             )
+    elif backend == "tesseract":
+        if shutil.which("tesseract") is None:
+            raise SystemExit(
+                "The 'ocr' command with --backend tesseract requires "
+                "Tesseract.\nInstall it (e.g. `brew install tesseract`)."
+            )
+        if lang is None:
+            lang = _read_book_language(input_path) or "en"
     else:
         raise SystemExit(f"Unknown OCR backend: {backend!r}")
 
-    input_path = Path(input_dir)
-    if not input_path.is_dir():
-        raise NotADirectoryError(f"Input must be a directory: {input_path}")
-
     artifacts_dir = input_path / "artifacts"
-    if artifacts_dir.is_dir():
-        artifacts_dir = artifacts_dir
-    else:
+    if not artifacts_dir.is_dir():
         artifacts_dir = input_path
 
     png_paths = sorted(artifacts_dir.glob("*.png"), key=_page_sort_key)
     if not png_paths:
         raise RuntimeError(f"No PNG files found in {artifacts_dir}")
 
-    # Determine which pages need OCR (skip those with existing .txt)
+    # Determine which pages need OCR.  Normally skip pages that already have a
+    # .txt; with override, re-OCR every page and overwrite it.
     todo: list[tuple[Path, Path]] = []  # (png, txt) pairs needing OCR
     for png_path in png_paths:
         txt_path = png_path.with_suffix(".txt")
-        if not txt_path.exists():
+        if override or not txt_path.exists():
             todo.append((png_path, txt_path))
 
     console = Console(stderr=True)
@@ -1464,19 +1599,31 @@ def cmd_ocr(
                 f"[dim]Skipping {skipped} pages with existing text.[/dim]"
             )
 
-        console.print(
-            f"[dim]Loading OCR model {model} (backend={backend})...[/dim]"
-        )
-        _load_ocr_model_mlx(model)
+        if backend == "mlx":
+            console.print(
+                f"[dim]Loading OCR model {model} (backend={backend})...[/dim]"
+            )
+            _load_ocr_model_mlx(model)
+        else:
+            tess_lang, psm, _ = _tesseract_config(lang, vertical)
+            console.print(
+                f"[dim]Running OCR (backend={backend}, lang={tess_lang}, "
+                f"psm={psm})...[/dim]"
+            )
 
-        skipped = len(png_paths) - len(todo)
         with _progress(len(png_paths), "OCR processing", show_progress) as (
             progress,
             task_id,
         ):
             progress.advance(task_id, skipped)
             for png_path, txt_path in todo:
-                text = _ocr_page(png_path, backend=backend, model=model)
+                text = _ocr_page(
+                    png_path,
+                    backend=backend,
+                    model=model,
+                    lang=lang or "en",
+                    vertical=vertical,
+                )
                 txt_path.write_text(text, encoding="utf-8")
                 progress.advance(task_id, 1)
     else:
@@ -2157,6 +2304,15 @@ def main():
             "single-page order, keeping page 1 as the cover."
         ),
     )
+    p_enhance.add_argument(
+        "--no-text",
+        dest="extract_text",
+        action="store_false",
+        help=(
+            "Skip pulling the source PDF's embedded text into per-page .txt "
+            "files (on by default; a scan with no text layer yields none)"
+        ),
+    )
 
     # ── extract ──
     p_extract = subparsers.add_parser(
@@ -2216,14 +2372,42 @@ def main():
     p_ocr.add_argument("input", help="Path to book directory")
     p_ocr.add_argument(
         "--backend",
-        choices=["mlx"],
-        default="mlx",
-        help="Inference backend (default: mlx for Apple Silicon)",
+        choices=["auto", "mlx", "tesseract"],
+        default="auto",
+        help=(
+            "Inference backend (default: auto — mlx on Apple Silicon, "
+            "tesseract elsewhere). 'mlx' is a local VLM (Apple Silicon only); "
+            "'tesseract' shells out to Tesseract and runs anywhere."
+        ),
     )
     p_ocr.add_argument(
         "--model",
         default=None,
-        help=f"OCR model (default: {_DEFAULT_OCR_MODEL_MLX})",
+        help=f"mlx OCR model (default: {_DEFAULT_OCR_MODEL_MLX})",
+    )
+    p_ocr.add_argument(
+        "--lang",
+        default=None,
+        help=(
+            "BCP-47 language for the tesseract backend (e.g. 'ja', 'de'); "
+            "ignored by mlx. Defaults to metadata.json's language, then English."
+        ),
+    )
+    p_ocr.add_argument(
+        "--vertical",
+        action="store_true",
+        help=(
+            "Tesseract: treat CJK text as vertical (uses the *_vert model, "
+            "psm 5). Ignored by mlx."
+        ),
+    )
+    p_ocr.add_argument(
+        "--override",
+        action="store_true",
+        help=(
+            "Re-OCR every page and overwrite existing .txt files (e.g. to "
+            "replace embedded text pulled by enhance/extract with fresh OCR)"
+        ),
     )
     p_ocr.add_argument(
         "--quiet",
@@ -2296,6 +2480,7 @@ def main():
             jobs=args.jobs,
             rasterizer=args.rasterizer,
             ppd=args.ppd,
+            extract_text=args.extract_text,
         )
         console.print(f"[green]Enhanced PNGs saved to {out_dir}[/green]")
 
@@ -2316,6 +2501,9 @@ def main():
             input_dir=args.input,
             backend=args.backend,
             model=args.model,
+            lang=args.lang,
+            vertical=args.vertical,
+            override=args.override,
             show_progress=not args.quiet,
         )
         console.print(f"[green]OCR text saved to {out_dir}[/green]")

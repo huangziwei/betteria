@@ -9,11 +9,14 @@ PDF→PNG     PNG→TXT   TXT→chapters   →EPUB + searchable PDF
 
 ## Prerequisites
 
-Apple Silicon only (the OCR step runs locally via [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). The proofreading is done with [Claude Code](https://code.claude.com/docs).
+The OCR step runs locally. On Apple Silicon it defaults to a VLM via
+[mlx-vlm](https://github.com/Blaizzy/mlx-vlm); on Intel (or anywhere, with
+`--backend tesseract`) it falls back to Tesseract. The proofreading is done
+with [Claude Code](https://code.claude.com/docs).
 
 ```bash
-brew install poppler    # provides pdftocairo / pdftoppm for rasterizing
-brew install tesseract  # word positions for the searchable PDF text layer
+brew install poppler    # provides pdftocairo / pdftoppm / pdftotext
+brew install tesseract  # OCR backend + word positions for the PDF text layer
 brew install uv         # Python package manager
 ```
 
@@ -24,7 +27,8 @@ Japanese). Without Tesseract, `merge` still builds a plain image-only PDF.
 ## Installation
 
 ```bash
-uv sync --extra ocr
+uv sync --extra ocr   # Apple Silicon: adds mlx-vlm for the VLM OCR backend
+uv sync               # Intel / elsewhere: OCR runs via the Tesseract backend
 ```
 
 ## Quick start
@@ -48,7 +52,7 @@ betteria merge book-artifacts/
 
 ### `betteria enhance <input.pdf>`
 
-Rasterizes each page and applies adaptive thresholding to produce clean black-and-white PNGs. Key options:
+Rasterizes each page and applies adaptive thresholding to produce clean black-and-white PNGs. It also pulls any embedded text the source PDF already carries into per-page `.txt` files (exactly like `extract` — handy for Internet Archive scans that ship an OCR text layer); a scanned PDF with no text layer simply yields none, and existing `.txt` files are never overwritten. Replace poor embedded text later with `betteria ocr --override`. Key options:
 
 - `--dpi` — resolution for rasterizing (default: 150)
 - `--adaptive` / `--threshold` — adaptive vs. global binarization
@@ -56,12 +60,17 @@ Rasterizes each page and applies adaptive thresholding to produce clean black-an
 - `--jobs` — parallel workers (default: all cores)
 - `--rasterizer` — `pdftocairo` (default) or `pdftoppm`
 - `--ppd` — page progression direction: `ltr` (default) or `rtl`
+- `--no-text` — skip embedded-text extraction (images only)
 
 ### `betteria ocr <book-dir>`
 
-Runs a local VLM on the enhanced PNGs to produce per-page `.txt` files.
+Runs OCR on the enhanced PNGs to produce per-page `.txt` files. Pages that already have a `.txt` (from `enhance`/`extract` or a previous run) are skipped, so the command is safe to re-run.
 
-- `--model` — mlx-vlm model (default: `mlx-community/PaddleOCR-VL-1.5-6bit`)
+- `--backend` — `auto` (default: mlx on Apple Silicon, Tesseract elsewhere), `mlx`, or `tesseract`
+- `--model` — mlx OCR model (default: `mlx-community/PaddleOCR-VL-1.5-6bit`)
+- `--lang` — BCP-47 language for the Tesseract backend (e.g. `ja`, `de`); defaults to `metadata.json`'s language, then English. Ignored by mlx.
+- `--vertical` — Tesseract: treat CJK as vertical (uses the `*_vert` model, e.g. `jpn_vert`)
+- `--override` — re-OCR every page and overwrite existing `.txt` (e.g. to replace the embedded text `enhance` pulled from the PDF with fresh OCR)
 
 ### `betteria merge <book-dir>`
 
